@@ -60,9 +60,12 @@ set(source_files
     model/ndndsim-stack.cc
     model/ndndsim-app.cc
     apps/ndndsim-consumer.cc
+    apps/ndndsim-consumer-zipf.cc
     apps/ndndsim-producer.cc
     helper/ndndsim-stack-helper.cc
     helper/ndndsim-app-helper.cc
+    helper/ndndsim-topology-reader.cc
+    helper/ndndsim-rate-tracer.cc
 )
 
 set(header_files
@@ -70,9 +73,12 @@ set(header_files
     model/ndndsim-stack.h
     model/ndndsim-app.h
     apps/ndndsim-consumer.h
+    apps/ndndsim-consumer-zipf.h
     apps/ndndsim-producer.h
     helper/ndndsim-stack-helper.h
     helper/ndndsim-app-helper.h
+    helper/ndndsim-topology-reader.h
+    helper/ndndsim-rate-tracer.h
 )
 
 build_lib(
@@ -84,7 +90,10 @@ build_lib(
         ${libnetwork}
         ${libinternet}
         ${libpoint-to-point}
+        ${libmobility}
         ndndsim_go_static
+    TEST_SOURCES
+        test/ndndsim-test-suite.cc
 )
 
 # Add include path for the generated Go header

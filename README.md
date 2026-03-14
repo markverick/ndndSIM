@@ -1,0 +1,457 @@
+# ndndSIM — NDN Simulation Module for ns-3
+
+ndndSIM is an ns-3 contrib module that provides Named Data Networking (NDN)
+simulation using the [NDNd](https://github.com/named-data/ndnd) Go forwarder.
+It bridges NDNd's production forwarding engine with ns-3's discrete-event
+simulation via CGo, giving you real NDN forwarding logic—FIB, PIT, CS,
+distance-vector routing—inside a fully controllable simulation environment.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  ns-3 C++ simulation                                     │
+│                                                          │
+│   NdndConsumer ─┐         ┌─ NdndProducer                │
+│   NdndConsumerZipf        │                              │
+│                 ▼         ▼                               │
+│              NdndApp (Application base)                   │
+│                      │                                    │
+│              NdndStack (per-node)                         │
+│                 │    ▲                                    │
+│   C bridge ─────┘    └──── ns-3 NetDevices               │
+│ ─ ─ ─ ─ ─ CGo boundary ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+│                                                          │
+│   Go: SimForwarder → fw.Thread (FIB, PIT, CS, DV)       │
+│        SimFace / DispatchFace per interface               │
+│        SimEngine – synchronous packet dispatch            │
+│        Ns3Clock – simulation time via core.NowFunc        │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Each simulated node gets a real NDNd `fw.Thread` with its own FIB, PIT, and
+content store. Packets traverse ns-3 channels (point-to-point, CSMA, WiFi) as
+Ethernet frames with EtherType `0x8624`. Simulation time replaces wall-clock
+time so the Go forwarder runs deterministically under ns-3's scheduler.
+
+## Prerequisites
+
+| Dependency | Version | Notes |
+|------------|---------|-------|
+| ns-3       | 3.43+   | Tested with 3.47 |
+| Go         | 1.22+   | CGo must be enabled (`CGO_ENABLED=1`) |
+| C++ compiler | GCC 11+ or Clang 15+ | Must match the compiler ns-3 uses |
+| CMake      | 3.16+   | |
+
+## Building
+
+ndndSIM lives in `contrib/ndndSIM/` inside your ns-3 tree. The build system
+automatically compiles the Go forwarder into a C archive and links it with the
+C++ module.
+
+```bash
+# Configure (only needed once)
+./ns3 configure --enable-examples --enable-tests
+
+# Build
+./ns3 build
+```
+
+The build produces:
+- `libndndsim_go.a` — Go forwarder compiled as a C archive
+- `libns3.XX-ndndSIM-*.so` — ns-3 shared library module
+
+## Quick Start
+
+Minimal 3-node scenario: Consumer → Router → Producer
+
+```cpp
+#include "ns3/core-module.h"
+#include "ns3/ndndSIM-module.h"
+#include "ns3/network-module.h"
+#include "ns3/point-to-point-module.h"
+
+using namespace ns3;
+
+int main(int argc, char* argv[])
+{
+    // Create nodes
+    NodeContainer nodes;
+    nodes.Create(3);
+
+    // Point-to-point links
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("10ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1));
+    p2p.Install(nodes.Get(1), nodes.Get(2));
+
+    // Install NDNd stack + routing
+    ndndsim::NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+    stackHelper.AddRoutesToAll("/ndn/test", nodes);
+
+    // Consumer on node 0
+    ndndsim::NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue("/ndn/test"));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    consumerHelper.Install(nodes.Get(0)).Start(Seconds(1.0));
+
+    // Producer on node 2
+    ndndsim::NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue("/ndn/test"));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(1024));
+    producerHelper.Install(nodes.Get(2)).Start(Seconds(0.5));
+
+    Simulator::Stop(Seconds(10.0));
+    Simulator::Run();
+    Simulator::Destroy();
+    stackHelper.DestroyBridge();
+    return 0;
+}
+```
+
+## API Reference
+
+### Core Model
+
+#### `NdndStack` — Per-Node NDN Protocol Stack
+
+Aggregated onto each `ns3::Node`. Manages the Go-side forwarder, faces, and
+routing table for that node.
+
+```cpp
+Ptr<NdndStack> stack = node->GetObject<NdndStack>();
+stack->GetFaceId(ifIndex);                  // Get face ID for a NetDevice
+stack->AddRoute("/ndn/prefix", faceId, 1);  // Add FIB entry
+stack->RemoveRoute("/ndn/prefix", faceId);  // Remove FIB entry
+```
+
+#### `NdndApp` — Application Base Class
+
+Base class for all NDN applications. Subclass it and override `OnStart()` /
+`OnStop()` to create custom apps. Provides `GetStack()` to access the node's
+NDN stack.
+
+```cpp
+class MyApp : public NdndApp
+{
+  protected:
+    void OnStart() override;
+    void OnStop() override;
+};
+```
+
+See the [custom app example](#custom-app) for a complete walkthrough.
+
+### Applications
+
+#### `NdndConsumer` — Periodic Interest Sender
+
+Sends Interests at a configurable rate with sequentially numbered names.
+
+| Attribute   | Type     | Default       | Description |
+|-------------|----------|---------------|-------------|
+| `Prefix`    | string   | `"/ndn/test"` | NDN name prefix for Interests |
+| `Frequency` | double   | `1.0`         | Interests per second |
+
+**Trace source:** `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+
+#### `NdndConsumerZipf` — Zipf-Mandelbrot Consumer
+
+Sends Interests with content names chosen from a Zipf-Mandelbrot distribution.
+Low-numbered content items are requested more frequently than high-numbered ones,
+modeling realistic content popularity.
+
+| Attribute          | Type     | Default       | Description |
+|--------------------|----------|---------------|-------------|
+| `Prefix`           | string   | `"/ndn/zipf"` | NDN name prefix |
+| `Frequency`        | double   | `1.0`         | Interests per second |
+| `NumberOfContents` | uint32_t | `100`         | Total content items |
+| `q`                | double   | `0.0`         | Zipf q-parameter |
+| `s`                | double   | `0.7`         | Zipf s-parameter (skewness) |
+
+The Zipf-Mandelbrot PMF is:
+
+$$P(k) = \frac{1/(k+q)^s}{\sum_{i=1}^{N} 1/(i+q)^s}$$
+
+**Trace source:** `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+
+#### `NdndProducer` — Data Producer
+
+Listens for Interests matching its prefix and replies with Data packets.
+
+| Attribute     | Type     | Default       | Description |
+|---------------|----------|---------------|-------------|
+| `Prefix`      | string   | `"/ndn/test"` | Name prefix to serve |
+| `PayloadSize` | uint32_t | `1024`        | Data payload size in bytes |
+
+**Trace source:** `DataSent(uint32_t payloadSize)` — fired on each Data sent.
+
+### Helpers
+
+#### `NdndStackHelper` — Stack Installation
+
+Installs the NDN stack on nodes and configures routing.
+
+```cpp
+ndndsim::NdndStackHelper stackHelper;
+
+// Initialize the Go bridge (called automatically on first Install)
+stackHelper.InitializeBridge();
+
+// Install on nodes
+stackHelper.Install(nodes);                           // NodeContainer
+Ptr<NdndStack> stack = stackHelper.Install(node);     // Single node
+
+// Routing
+stackHelper.AddRoutesToAll("/prefix", nodes);          // All-to-all routes
+stackHelper.AddRoute(node, "/prefix", ifIndex, cost);  // By interface index
+stackHelper.AddRoute(node, "/prefix", faceId, cost);   // By face ID
+
+// Cleanup (call after Simulator::Destroy)
+stackHelper.DestroyBridge();
+```
+
+#### `NdndAppHelper` — Application Factory
+
+Creates and installs NDN applications on nodes.
+
+```cpp
+ndndsim::NdndAppHelper helper("ns3::ndndsim::NdndConsumer");
+helper.SetAttribute("Prefix", StringValue("/ndn/test"));
+helper.SetAttribute("Frequency", DoubleValue(100.0));
+
+ApplicationContainer apps = helper.Install(nodes);
+apps.Start(Seconds(1.0));
+apps.Stop(Seconds(10.0));
+```
+
+#### `NdndTopologyReader` — Topology File Reader
+
+Reads topology files in the standard ndnSIM annotated format and creates the
+corresponding ns-3 nodes and point-to-point links.
+
+```cpp
+ndndsim::NdndTopologyReader reader;
+reader.SetFileName("path/to/topology.txt");
+NodeContainer nodes = reader.Read();
+
+// Access link details
+for (const auto& link : reader.GetLinks()) {
+    // link.fromName, link.toName, link.dataRate, link.delay, ...
+}
+```
+
+Nodes are registered in the ns-3 naming system (`Names::Find<Node>("NodeName")`)
+and given `ConstantPositionMobilityModel` with coordinates from the file.
+
+**Topology file format:**
+
+```
+# Anything after '#' is a comment
+
+router
+
+# node    comment    yPos    xPos
+Node0     NA         0       0
+Node1     NA         0       1
+Node2     NA         1       0
+
+link
+
+# srcNode  dstNode  bandwidth  metric  delay  queue  [lossRate]
+Node0      Node1    10Mbps     1       1ms    100
+Node1      Node2    10Mbps     1       1ms    100    0.01
+```
+
+The `router` section defines nodes with optional grid positions. The `link`
+section defines point-to-point connections. An optional `lossRate` column
+(0.0–1.0) installs a `RateErrorModel` on the link.
+
+#### `NdndRateTracer` — CSV Rate Statistics
+
+Periodically writes per-node packet/byte counters to a CSV file. Connects to
+the `InterestSent` and `DataSent` trace sources on Consumer and Producer
+applications.
+
+```cpp
+// Trace all nodes, write every 0.5 seconds
+ndndsim::NdndRateTracer::InstallAll("rates.csv", Seconds(0.5));
+
+// Or trace specific nodes
+ndndsim::NdndRateTracer::Install(someNodes, "rates.csv", Seconds(1.0));
+```
+
+**CSV output format:**
+
+```csv
+Time,Node,Type,Packets,KBytes
+0.5,0,InterestSent,50,0
+0.5,1,DataSent,50,51.2
+1,0,InterestSent,50,0
+```
+
+Counters reset each period, so values represent the count within that interval.
+
+## Examples
+
+All examples are in `contrib/ndndSIM/examples/`. Run any example with:
+
+```bash
+./ns3 run ndndsim-<name>
+```
+
+### Basic Topologies
+
+| Example | Description |
+|---------|-------------|
+| `ndndsim-simple` | 3-node linear: Consumer → Router → Producer |
+| `ndndsim-grid` | 3×3 point-to-point grid |
+| `ndndsim-tree` | Binary tree with 4 consumers and 1 producer |
+| `ndndsim-csma` | 3 nodes on a shared CSMA bus |
+| `ndndsim-wifi` | 2 nodes over 802.11a WiFi Ad-Hoc |
+
+### Advanced Scenarios
+
+| Example | Description |
+|---------|-------------|
+| `ndndsim-link-failure` | Link goes down at t=5s, recovers at t=8s |
+| `ndndsim-custom-app` | Writing a custom `NdndApp` subclass (Ping app) |
+| `ndndsim-zipf` | Zipf-Mandelbrot content popularity distribution |
+| `ndndsim-topo-reader` | Read topology from file (supports `--topo`, `--consumer`, `--producer` CLI args) |
+| `ndndsim-tree-tracers` | Tree topology from file + CSV rate tracing |
+
+### Topology Files
+
+Two topology files are provided in `examples/topologies/`:
+
+- **`topo-grid-3x3.txt`** — 9 nodes in a 3×3 grid, 1 Mbps / 10 ms links
+- **`topo-tree.txt`** — 7-node binary tree, 10 Mbps / 1 ms links
+
+### Custom App Example
+
+The `ndndsim-custom-app` example shows how to subclass `NdndApp`:
+
+```cpp
+class NdndPing : public ndndsim::NdndApp
+{
+  public:
+    static TypeId GetTypeId();  // Register attributes
+
+  protected:
+    void OnStart() override
+    {
+        NdndApp::OnStart();
+        // Schedule your first event
+        m_sendEvent = Simulator::Schedule(Seconds(0), &NdndPing::SendPing, this);
+    }
+
+    void OnStop() override
+    {
+        Simulator::Cancel(m_sendEvent);
+        NdndApp::OnStop();
+    }
+
+  private:
+    void SendPing();  // Build and send an Interest via the Go bridge
+};
+```
+
+## Writing a Custom Application
+
+1. **Inherit from `NdndApp`** — gives you `GetStack()` and lifecycle hooks.
+2. **Override `OnStart()`** — schedule your first event. Always call
+   `NdndApp::OnStart()` first.
+3. **Override `OnStop()`** — cancel pending events. Always call
+   `NdndApp::OnStop()` last.
+4. **Register a TypeId** — use `AddConstructor<>()` and set the group to `"ndndSIM"`.
+5. **Send packets** — encode an NDN Interest/Data as a TLV byte buffer and call
+   `NdndSimReceivePacket()` via the Go bridge to inject it into the forwarder.
+
+## Running Tests
+
+```bash
+# Run the full ndndSIM test suite (18 tests)
+./ns3 run test-runner -- --suite=ndndsim --verbose
+
+# With extensive (integration) tests
+./ns3 run test-runner -- --suite=ndndsim --verbose --fullness=EXTENSIVE
+```
+
+Tests cover TypeId registration, object lifecycle, attribute configuration,
+stack installation, routing, end-to-end forwarding, sequence ordering,
+multi-consumer scenarios, EtherType filtering, cleanup, app lifecycle timing,
+and link failure/recovery.
+
+## Module Structure
+
+```
+contrib/ndndSIM/
+├── CMakeLists.txt              # Build: Go archive + ns-3 module
+├── README.md                   # This file
+├── model/
+│   ├── ndndsim-go-bridge.h/cc # C ↔ Go bridge via CGo
+│   ├── ndndsim-stack.h/cc     # Per-node NDN stack (NdndStack)
+│   └── ndndsim-app.h/cc       # Application base class (NdndApp)
+├── apps/
+│   ├── ndndsim-consumer.h/cc       # Periodic Interest consumer
+│   ├── ndndsim-consumer-zipf.h/cc  # Zipf-Mandelbrot consumer
+│   └── ndndsim-producer.h/cc       # Data producer
+├── helper/
+│   ├── ndndsim-stack-helper.h/cc      # Stack install + routing
+│   ├── ndndsim-app-helper.h/cc        # App factory helper
+│   ├── ndndsim-topology-reader.h/cc   # Topology file reader
+│   └── ndndsim-rate-tracer.h/cc       # CSV rate tracer
+├── examples/
+│   ├── ndndsim-simple.cc         # 3-node linear
+│   ├── ndndsim-tree.cc           # Binary tree
+│   ├── ndndsim-grid.cc           # 3×3 grid
+│   ├── ndndsim-csma.cc           # CSMA bus
+│   ├── ndndsim-wifi.cc           # WiFi Ad-Hoc
+│   ├── ndndsim-link-failure.cc   # Link failure scenario
+│   ├── ndndsim-custom-app.cc     # Custom app subclass
+│   ├── ndndsim-zipf.cc           # Zipf consumer
+│   ├── ndndsim-topo-reader.cc    # Topology file reader
+│   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
+│   └── topologies/               # Topology definition files
+├── test/
+│   └── ndndsim-test-suite.cc     # 18 unit/integration tests
+└── ndnd/                         # NDNd Go forwarder (submodule)
+    └── sim/                      # Go simulation bridge package
+```
+
+## How It Works
+
+1. **Build time**: The Go forwarder is compiled into a C archive (`libndndsim_go.a`)
+   using `go build -buildmode=c-archive`. This archive contains the full NDNd
+   forwarding engine.
+
+2. **Initialization**: `NdndStackHelper::InitializeBridge()` registers C++
+   callback functions (send packet, schedule event, cancel event, get time)
+   with the Go runtime.
+
+3. **Per-node setup**: `NdndStack::Install()` calls `NdndSimCreateNode()` in Go,
+   which creates a `fw.Thread` (with FIB, PIT, CS), and one `SimFace` per
+   NetDevice. Each face gets a unique global ID.
+
+4. **Packet flow**:
+   - **Outgoing**: Application → Go bridge (`NdndSimReceivePacket`) → forwarder
+     → `SimFace.SendPacket()` → C callback → `NdndStack::ReceiveFromDevice()`
+     → ns-3 `NetDevice::Send()`
+   - **Incoming**: ns-3 `NetDevice::Receive()` → `NdndStack::ReceiveFromDevice()`
+     → Go bridge (`NdndSimReceivePacket`) → forwarder PIT/CS/FIB lookup →
+     forward or satisfy
+
+5. **Time synchronization**: The Go side calls back into C++ for the current
+   simulation time (`Simulator::Now()`) and for scheduling/canceling events
+   (`Simulator::Schedule()`, `Simulator::Cancel()`).
+
+6. **Routing**: `NdndSimAddRoute()` inserts FIB entries in the Go forwarder.
+   `AddRoutesToAll()` computes shortest-path next hops and installs routes on
+   every node.
+
+## License
+
+See the top-level ns-3 [LICENSE](../../LICENSE) file.

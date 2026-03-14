@@ -1,0 +1,3 @@
+[submodule "ndnd"]
+	path = ndnd
+	url = git@github.com:markverick/ndnd.git

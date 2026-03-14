@@ -1,0 +1,47 @@
+# topo-tree.txt
+#
+# Standard ndnSIM topology file format — binary tree
+#
+#     /------\      /------\      /------\      /------\
+#     |leaf-1|      |leaf-2|      |leaf-3|      |leaf-4|
+#     \------/      \------/      \------/      \------/
+#          ^          ^                ^           ^
+#          |          |                |           |
+#           \        /                  \         /
+#            \      /                    \       /    10Mbps / 1ms
+#             \    /                      \     /
+#              |  |                        |   |
+#              v  v                        v   v
+#          /-------\                    /-------\
+#          | rtr-1 |                    | rtr-2 |
+#          \-------/                    \-------/
+#                ^                        ^
+#                |                        |
+#                 \                      /  10 Mbps / 1ms
+#                  +--------+  +--------+
+#                           |  |
+#                           v  v
+#                        /--------\
+#                        |  root  |
+#                        \--------/
+
+router
+
+# node    comment   yPos    xPos
+leaf-1    NA        80      40
+leaf-2    NA        80      20
+leaf-3    NA        80      0
+leaf-4    NA        80      -20
+rtr-1     NA        60      20
+rtr-2     NA        60      0
+root      NA        40      10
+
+link
+
+# from      to        capacity    metric  delay   queue
+leaf-1      rtr-1     10Mbps      1       1ms     100
+leaf-2      rtr-1     10Mbps      1       1ms     100
+leaf-3      rtr-2     10Mbps      1       1ms     100
+leaf-4      rtr-2     10Mbps      1       1ms     100
+rtr-1       root      10Mbps      1       1ms     100
+rtr-2       root      10Mbps      1       1ms     100
