@@ -1,0 +1,91 @@
+/*
+ * ndndSIM - ns-3 NDNd Simulation Module
+ *
+ * NdndStack: Per-node NDNd network stack, installed as an ns-3 Object
+ * aggregated to a Node. Manages the lifecycle of the Go-side NDNd instance,
+ * creates faces for each NetDevice, and handles packet receive callbacks.
+ */
+
+#ifndef NDNDSIM_STACK_H
+#define NDNDSIM_STACK_H
+
+#include "ns3/net-device.h"
+#include "ns3/node.h"
+#include "ns3/object.h"
+#include "ns3/packet.h"
+#include "ns3/ptr.h"
+
+#include <map>
+
+namespace ns3
+{
+namespace ndndsim
+{
+
+/**
+ * \brief NDNd protocol stack for a single ns-3 Node.
+ *
+ * When aggregated to a Node, this object creates the Go-side NDNd
+ * forwarder instance, registers a face per NetDevice, and hooks into
+ * NetDevice receive callbacks so that incoming NDN packets are delivered
+ * to the forwarder.
+ */
+class NdndStack : public Object
+{
+  public:
+    static TypeId GetTypeId();
+
+    NdndStack();
+    ~NdndStack() override;
+
+    /**
+     * Install the NDNd stack on the associated node.
+     * Creates the Go-side node and faces.
+     */
+    void Install();
+
+    /**
+     * Add a FIB route on this node.
+     * \param prefix NDN name prefix (URI format, e.g., "/ndn/example")
+     * \param faceId face ID returned by the Go forwarder
+     * \param cost route cost
+     */
+    void AddRoute(const std::string& prefix, uint64_t faceId, uint64_t cost);
+
+    /**
+     * Remove a FIB route on this node.
+     */
+    void RemoveRoute(const std::string& prefix, uint64_t faceId);
+
+    /**
+     * Get the face ID for a specific NetDevice interface index.
+     * Returns 0 if not found.
+     */
+    uint64_t GetFaceId(uint32_t ifIndex) const;
+
+  protected:
+    void DoDispose() override;
+    void NotifyNewAggregate() override;
+
+  private:
+    /**
+     * Callback for packets received on a NetDevice.
+     */
+    void ReceiveFromDevice(Ptr<NetDevice> device,
+                            Ptr<const Packet> packet,
+                            uint16_t protocol,
+                            const Address& sender,
+                            const Address& receiver,
+                            NetDevice::PacketType packetType);
+
+    Ptr<Node> m_node;
+    bool m_installed;
+
+    /// Map from NetDevice interface index to Go face ID
+    std::map<uint32_t, uint64_t> m_faceIds;
+};
+
+} // namespace ndndsim
+} // namespace ns3
+
+#endif /* NDNDSIM_STACK_H */
