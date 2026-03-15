@@ -38,6 +38,7 @@ add_custom_command(
         ${NDND_SRC_DIR}/sim/node.go
         ${NDND_SRC_DIR}/sim/runtime.go
         ${NDND_SRC_DIR}/sim/cgo_export.go
+        ${NDND_SRC_DIR}/sim/dv.go
         ${NDND_SRC_DIR}/sim/ndndsim_sim.h
         ${NDND_SRC_DIR}/sim/util.go
         ${NDND_SRC_DIR}/sim/cmd/main.go
@@ -66,6 +67,8 @@ set(source_files
     helper/ndndsim-app-helper.cc
     helper/ndndsim-topology-reader.cc
     helper/ndndsim-rate-tracer.cc
+    helper/ndndsim-traffic-tracer.cc
+    helper/ndndsim-link-tracer.cc
 )
 
 set(header_files
@@ -79,6 +82,8 @@ set(header_files
     helper/ndndsim-app-helper.h
     helper/ndndsim-topology-reader.h
     helper/ndndsim-rate-tracer.h
+    helper/ndndsim-traffic-tracer.h
+    helper/ndndsim-link-tracer.h
 )
 
 build_lib(

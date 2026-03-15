@@ -231,6 +231,10 @@ stackHelper.CalculateRoutes("/prefix", producers, allNodes);
 // DV routing (automatic route discovery via NDNd distance-vector protocol)
 stackHelper.EnableDvRouting("/ndn", allNodes);
 
+// Dynamic prefix announce/withdraw (DV routing only)
+stackHelper.AnnouncePrefixToDv(node, "/ndn/service/foo");
+stackHelper.WithdrawPrefixFromDv(node, "/ndn/service/foo");
+
 // Cleanup (call after Simulator::Destroy)
 stackHelper.DestroyBridge();
 ```
@@ -328,6 +332,53 @@ Time,Node,Type,Packets,KBytes
 
 Counters reset each period, so values represent the count within that interval.
 
+#### `NdndLinkTracer` — Classified Link Traffic
+
+Measures link-level traffic classified by NDN packet type. Connects to
+the `MacTx` trace source on any `NetDevice` and parses the raw NDN TLV
+(unwrapping NDNLPv2 framing) to classify each packet into one of six
+categories.
+
+| Category | Description |
+|----------|-------------|
+| `DvAdvert` | DV advertisement sync & data (`/localhop/.../32=DV/...`) |
+| `PrefixSync` | DV prefix-table sync (`/.../32=DV/32=PFS/...`) |
+| `Mgmt` | Local management (`/localhost/nlsr/...`) |
+| `UserInterest` | Application-level Interest |
+| `UserData` | Application-level Data |
+| `Other` | Unrecognised / malformed |
+
+```cpp
+auto linkTracer = ndndsim::NdndLinkTracer::Create("link-traffic.csv", Seconds(1.0));
+linkTracer->ConnectLink(p2pDevices);  // NetDeviceContainer
+linkTracer->ConnectDevice(singleDev); // Individual device
+// ...
+linkTracer->Stop();
+```
+
+The tracer is L2-agnostic — works with PointToPoint, CSMA, WiFi, etc.
+It uses an `NdnPayloadTag` (set internally by the Go bridge) to skip
+the L2 header regardless of its length.
+
+**CSV output format:**
+
+```csv
+Time,DvAdvert_Pkts,DvAdvert_Bytes,PrefixSync_Pkts,PrefixSync_Bytes,Mgmt_Pkts,Mgmt_Bytes,UserInterest_Pkts,UserInterest_Bytes,UserData_Pkts,UserData_Bytes,Other_Pkts,Other_Bytes
+1,1078,233078,1549,218324,0,0,0,0,0,0,0,0
+2,64,13384,0,0,0,0,0,0,0,0,0,0
+```
+
+Pair with `plot-ndndsim-traffic.py` to visualise:
+
+```bash
+python3 contrib/ndndSIM/examples/plot-ndndsim-traffic.py link-traffic.csv \
+    -e events.csv -o traffic.png
+
+# Control-plane only (exclude user traffic)
+python3 contrib/ndndSIM/examples/plot-ndndsim-traffic.py link-traffic.csv \
+    --exclude UserInterest UserData Other -o control-plane.png
+```
+
 ## Examples
 
 All examples are in `contrib/ndndSIM/examples/`. Run any example with:
@@ -363,6 +414,7 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-zipf` | Zipf-Mandelbrot content popularity distribution |
 | `ndndsim-topo-reader` | Read topology from file (supports `--topo`, `--consumer`, `--producer` CLI args) |
 | `ndndsim-tree-tracers` | Tree topology from file + CSV rate tracing |
+| `ndndsim-sprint-churn` | Sprint PoP topology with random link flaps, prefix add/remove, DV routing, and classified link traffic measurement |
 
 ### Topology Files
 
@@ -448,7 +500,8 @@ contrib/ndndSIM/
 │   ├── ndndsim-stack-helper.h/cc      # Stack install + routing
 │   ├── ndndsim-app-helper.h/cc        # App factory helper
 │   ├── ndndsim-topology-reader.h/cc   # Topology file reader
-│   └── ndndsim-rate-tracer.h/cc       # CSV rate tracer
+│   ├── ndndsim-rate-tracer.h/cc       # CSV rate tracer
+│   └── ndndsim-link-tracer.h/cc       # Classified link traffic tracer
 ├── examples/
 │   ├── ndndsim-simple.cc         # 3-node linear
 │   ├── ndndsim-tree.cc           # Binary tree
@@ -463,6 +516,8 @@ contrib/ndndSIM/
 │   ├── ndndsim-zipf.cc           # Zipf consumer
 │   ├── ndndsim-topo-reader.cc    # Topology file reader
 │   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
+│   ├── ndndsim-sprint-churn.cc   # Sprint PoP topology + link/prefix churn
+│   ├── plot-ndndsim-traffic.py   # Traffic composition plotter
 │   └── topologies/               # Topology definition files
 ├── test/
 │   └── ndndsim-test-suite.cc     # 30 unit/integration tests

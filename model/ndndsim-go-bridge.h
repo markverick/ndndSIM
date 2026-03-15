@@ -101,6 +101,16 @@ extern "C"
                                         uint32_t payloadSize,
                                         uint32_t freshnessMs);
 
+    /** Announce a prefix to this node's DV router (no app installed). Returns 0 on success. */
+    extern int NdndSimAnnouncePrefixToDv(uint32_t nodeId,
+                                          char* prefixStr,
+                                          int prefixLen);
+
+    /** Withdraw a prefix from this node's DV router. Returns 0 on success. */
+    extern int NdndSimWithdrawPrefixFromDv(uint32_t nodeId,
+                                            char* prefixStr,
+                                            int prefixLen);
+
     /** Start DV routing on a node. Returns 0 on success. */
     extern int NdndSimStartDv(uint32_t nodeId,
                                char* networkStr,

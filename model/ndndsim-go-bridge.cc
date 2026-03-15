@@ -8,6 +8,7 @@
 #include "ndndsim-go-bridge.h"
 
 #include "ns3/log.h"
+#include "ns3/ndndsim-link-tracer.h"
 #include "ns3/node.h"
 #include "ns3/node-list.h"
 #include "ns3/simulator.h"
@@ -67,6 +68,11 @@ OnSendPacket(uint32_t nodeId, uint32_t ifIndex, const void* data, uint32_t dataL
 
     // Create an ns-3 Packet from the raw bytes
     Ptr<Packet> pkt = Create<Packet>(static_cast<const uint8_t*>(data), dataLen);
+
+    // Tag with NDN payload size so MacTx callbacks can skip the L2 header.
+    NdnPayloadTag tag;
+    tag.SetPayloadSize(dataLen);
+    pkt->AddPacketTag(tag);
 
     // Send as broadcast (NDN typically uses broadcast on shared media).
     // For point-to-point links, the destination address doesn't matter.

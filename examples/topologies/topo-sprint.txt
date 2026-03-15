@@ -1,0 +1,45 @@
+# topo-sprint.txt
+#
+# Sprint PoP-level topology (Rocketfuel-derived, simplified)
+#
+# 11 PoP nodes based on the Rocketfuel Sprint-US backbone.
+# Each link is 10 Gbps with delay proportional to geographic distance.
+#
+# Reference:
+#   N. Spring, R. Mahajan, D. Wetherall, T. Anderson.
+#   "Measuring ISP Topologies with Rocketfuel." IEEE/ACM ToN 2004.
+
+router
+
+# node             comment             yPos    xPos
+Seattle             NA                  90      10
+SanFrancisco        NA                  70      10
+LosAngeles          NA                  50      10
+Denver              NA                  70      40
+KansasCity          NA                  60      50
+Dallas              NA                  40      50
+Chicago             NA                  80      60
+Indianapolis        NA                  70      65
+Atlanta             NA                  40      70
+Washington          NA                  70      85
+NewYork             NA                  80      90
+
+link
+
+# from              to                  capacity    metric  delay   queue
+Seattle             SanFrancisco        10Gbps      1       5ms     200
+Seattle             Denver              10Gbps      1       8ms     200
+SanFrancisco        LosAngeles          10Gbps      1       3ms     200
+SanFrancisco        Denver              10Gbps      1       7ms     200
+LosAngeles          Dallas              10Gbps      1       10ms    200
+Denver              KansasCity          10Gbps      1       5ms     200
+KansasCity          Dallas              10Gbps      1       4ms     200
+KansasCity          Chicago             10Gbps      1       4ms     200
+KansasCity          Indianapolis        10Gbps      1       4ms     200
+Dallas              Atlanta             10Gbps      1       6ms     200
+Chicago             Indianapolis        10Gbps      1       2ms     200
+Chicago             NewYork             10Gbps      1       7ms     200
+Indianapolis        Atlanta             10Gbps      1       4ms     200
+Indianapolis        Washington          10Gbps      1       5ms     200
+Atlanta             Washington          10Gbps      1       5ms     200
+Washington          NewYork             10Gbps      1       2ms     200

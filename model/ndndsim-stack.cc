@@ -156,6 +156,28 @@ NdndStack::RemoveRoute(const std::string& prefix, uint64_t faceId)
                         faceId);
 }
 
+void
+NdndStack::AnnouncePrefixToDv(const std::string& prefix)
+{
+    NS_ASSERT_MSG(m_installed, "NdndStack not installed");
+
+    std::string p = prefix;
+    NdndSimAnnouncePrefixToDv(m_node->GetId(),
+                               const_cast<char*>(p.c_str()),
+                               static_cast<int>(p.size()));
+}
+
+void
+NdndStack::WithdrawPrefixFromDv(const std::string& prefix)
+{
+    NS_ASSERT_MSG(m_installed, "NdndStack not installed");
+
+    std::string p = prefix;
+    NdndSimWithdrawPrefixFromDv(m_node->GetId(),
+                                 const_cast<char*>(p.c_str()),
+                                 static_cast<int>(p.size()));
+}
+
 uint64_t
 NdndStack::GetFaceId(uint32_t ifIndex) const
 {

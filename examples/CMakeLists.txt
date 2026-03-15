@@ -75,6 +75,18 @@ build_lib_example(
         ${libpoint-to-point-layout}
 )
 
+# Sprint topology with random link/prefix churn
+build_lib_example(
+    NAME ndndsim-sprint-churn
+    SOURCE_FILES ndndsim-sprint-churn.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)
+
 # CSMA example
 build_lib_example(
     NAME ndndsim-csma

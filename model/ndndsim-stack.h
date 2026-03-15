@@ -58,6 +58,17 @@ class NdndStack : public Object
     void RemoveRoute(const std::string& prefix, uint64_t faceId);
 
     /**
+     * Announce a prefix to this node's DV router (routing-only, no app).
+     * DV will advertise it to all neighbours.
+     */
+    void AnnouncePrefixToDv(const std::string& prefix);
+
+    /**
+     * Withdraw a previously announced prefix from this node's DV router.
+     */
+    void WithdrawPrefixFromDv(const std::string& prefix);
+
+    /**
      * Get the face ID for a specific NetDevice interface index.
      * Returns 0 if not found.
      */
