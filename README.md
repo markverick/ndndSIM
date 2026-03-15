@@ -64,6 +64,12 @@ cd ../..
 ./ns3 build
 ```
 
+The first `./ns3 configure` automatically patches `PointToPointNetDevice` to
+add NDN EtherType support (`0x8624` ↔ PPP `0x0077`). This is required because
+ns-3's P2P device only recognises IPv4/IPv6 by default and will assert on any
+other protocol. The patch is idempotent — subsequent configures skip it if
+already applied.
+
 The build produces:
 - `libndndsim_go.a` — Go forwarder compiled as a C archive
 - `libns3.XX-ndndSIM-*.so` — ns-3 shared library module

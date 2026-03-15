@@ -4,11 +4,42 @@
 # running under ns-3's discrete-event simulation.
 #
 # Build process:
-# 1. Build the NDNd Go simulation library as a C archive (.a)
-# 2. Build the C++ ns-3 module linking against the Go archive
+# 1. Patch ns-3 PointToPointNetDevice to recognise NDN EtherType (if needed)
+# 2. Build the NDNd Go simulation library as a C archive (.a)
+# 3. Build the C++ ns-3 module linking against the Go archive
 #
 
 cmake_minimum_required(VERSION 3.16)
+
+# ─── Patch PointToPointNetDevice for NDN EtherType ──────────────────────
+#
+# ns-3's P2P device has a hardcoded switch mapping Ethernet ↔ PPP protocol
+# numbers, with NS_ASSERT on unknown values. NDN (EtherType 0x8624, PPP
+# 0x0077) isn't included upstream, so it must be patched in. This runs at
+# configure time and is idempotent — it won't modify a file already patched.
+#
+set(_P2P_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../src/point-to-point/model/point-to-point-net-device.cc")
+if(EXISTS "${_P2P_SRC}")
+    file(READ "${_P2P_SRC}" _p2p_content)
+    string(FIND "${_p2p_content}" "0x8624" _ndn_found)
+    if(_ndn_found EQUAL -1)
+        message(STATUS "ndndSIM: Patching PointToPointNetDevice for NDN EtherType (0x8624)")
+        # Add NDN case to PppToEther (PPP 0x0077 → Ethernet 0x8624)
+        string(REPLACE
+            "case 0x0057:\n        return 0x86DD; // IPv6\n    default:"
+            "case 0x0057:\n        return 0x86DD; // IPv6\n    case 0x0077:\n        return 0x8624; // NDN (Named Data Networking)\n    default:"
+            _p2p_content "${_p2p_content}")
+        # Add NDN case to EtherToPpp (Ethernet 0x8624 → PPP 0x0077)
+        string(REPLACE
+            "case 0x86DD:\n        return 0x0057; // IPv6\n    default:"
+            "case 0x86DD:\n        return 0x0057; // IPv6\n    case 0x8624:\n        return 0x0077; // NDN (Named Data Networking)\n    default:"
+            _p2p_content "${_p2p_content}")
+        file(WRITE "${_P2P_SRC}" "${_p2p_content}")
+        message(STATUS "ndndSIM: Patch applied successfully")
+    else()
+        message(STATUS "ndndSIM: PointToPointNetDevice already has NDN EtherType — no patch needed")
+    endif()
+endif()
 
 # ─── Build the Go shared library ────────────────────────────────────────
 
