@@ -51,6 +51,11 @@ NdndProducer::GetTypeId()
                            UintegerValue(1024),
                            MakeUintegerAccessor(&NdndProducer::m_payloadSize),
                            MakeUintegerChecker<uint32_t>())
+            .AddAttribute("Freshness",
+                           "FreshnessPeriod of produced Data",
+                           TimeValue(MilliSeconds(0)),
+                           MakeTimeAccessor(&NdndProducer::m_freshness),
+                           MakeTimeChecker())
             .AddTraceSource("DataSent",
                              "Trace fired when Data is sent",
                              MakeTraceSourceAccessor(&NdndProducer::m_dataSentTrace),
@@ -59,7 +64,8 @@ NdndProducer::GetTypeId()
 }
 
 NdndProducer::NdndProducer()
-    : m_payloadSize(1024)
+    : m_payloadSize(1024),
+      m_freshness(MilliSeconds(0))
 {
 }
 
@@ -84,11 +90,21 @@ NdndProducer::OnStart()
     stack->AddRoute(m_prefix, appFace, 0);
 
     // Register a Go-side Interest handler that generates Data replies.
+    uint32_t freshnessMs = static_cast<uint32_t>(m_freshness.GetMilliSeconds());
     int rc = NdndSimRegisterProducer(GetNode()->GetId(),
                                       const_cast<char*>(m_prefix.c_str()),
                                       static_cast<int>(m_prefix.size()),
-                                      m_payloadSize);
+                                      m_payloadSize,
+                                      freshnessMs);
     NS_ASSERT_MSG(rc == 0, "Failed to register producer on Go side");
+
+    // Register for Data produced notifications from the Go bridge
+    RegisterDataProducedCallback(GetNode()->GetId(),
+        [this](uint32_t dataSize) {
+            NS_LOG_INFO("t=" << Simulator::Now().GetSeconds() << "s node="
+                        << GetNode()->GetId() << " Produced Data (" << dataSize << " bytes)");
+            m_dataSentTrace(dataSize);
+        });
 
     NS_LOG_INFO("Registered route " << m_prefix << " → face " << appFace
                                      << " on node " << GetNode()->GetId());

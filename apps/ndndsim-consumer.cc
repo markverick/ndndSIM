@@ -20,6 +20,7 @@
 #include "ns3/string.h"
 #include "ns3/double.h"
 #include "ns3/uinteger.h"
+#include "ns3/random-variable-stream.h"
 
 #include <cstdint>
 #include <cstring>
@@ -55,15 +56,31 @@ NdndConsumer::GetTypeId()
                            DoubleValue(1.0),
                            MakeDoubleAccessor(&NdndConsumer::m_frequency),
                            MakeDoubleChecker<double>(0.0))
+            .AddAttribute("LifeTime",
+                           "Interest lifetime",
+                           TimeValue(Seconds(2.0)),
+                           MakeTimeAccessor(&NdndConsumer::m_lifetime),
+                           MakeTimeChecker())
+            .AddAttribute("Randomize",
+                           "Randomize sending: none, uniform, exponential",
+                           StringValue("none"),
+                           MakeStringAccessor(&NdndConsumer::m_randomize),
+                           MakeStringChecker())
             .AddTraceSource("InterestSent",
                              "Trace fired when an Interest is sent",
                              MakeTraceSourceAccessor(&NdndConsumer::m_interestSentTrace),
-                             "ns3::ndndsim::NdndConsumer::InterestSentCallback");
+                             "ns3::ndndsim::NdndConsumer::InterestSentCallback")
+            .AddTraceSource("DataReceived",
+                             "Trace fired when Data is received from the network",
+                             MakeTraceSourceAccessor(&NdndConsumer::m_dataReceivedTrace),
+                             "ns3::ndndsim::NdndConsumer::DataReceivedCallback");
     return tid;
 }
 
 NdndConsumer::NdndConsumer()
     : m_frequency(1.0),
+      m_lifetime(Seconds(2.0)),
+      m_randomize("none"),
       m_seqNo(0)
 {
 }
@@ -121,7 +138,7 @@ EncodeNameComponent(uint32_t type, const std::string& value)
 }
 
 static std::vector<uint8_t>
-EncodeInterest(const std::string& prefix, uint32_t seqNo)
+EncodeInterest(const std::string& prefix, uint32_t seqNo, uint32_t lifetimeMs)
 {
     // Parse prefix into components
     std::vector<std::string> components;
@@ -164,12 +181,20 @@ EncodeInterest(const std::string& prefix, uint32_t seqNo)
     nonceTlv.push_back(static_cast<uint8_t>((nonce >> 8) & 0xFF));
     nonceTlv.push_back(static_cast<uint8_t>(nonce & 0xFF));
 
-    // InterestLifetime TLV (4000ms = 4 bytes NonNegativeInteger)
+    // InterestLifetime TLV
     std::vector<uint8_t> lifetimeTlv;
     lifetimeTlv.push_back(12); // InterestLifetime type
-    lifetimeTlv.push_back(2);  // Length (2 bytes)
-    lifetimeTlv.push_back(0x0F); // 4000 = 0x0FA0
-    lifetimeTlv.push_back(0xA0);
+    if (lifetimeMs <= 0xFF)
+    {
+        lifetimeTlv.push_back(1);
+        lifetimeTlv.push_back(static_cast<uint8_t>(lifetimeMs));
+    }
+    else
+    {
+        lifetimeTlv.push_back(2);
+        lifetimeTlv.push_back(static_cast<uint8_t>((lifetimeMs >> 8) & 0xFF));
+        lifetimeTlv.push_back(static_cast<uint8_t>(lifetimeMs & 0xFF));
+    }
 
     // Interest TLV
     std::vector<uint8_t> interestValue;
@@ -194,6 +219,35 @@ NdndConsumer::OnStart()
     NS_LOG_INFO("Consumer starting on node " << GetNode()->GetId()
                                               << " prefix=" << m_prefix
                                               << " freq=" << m_frequency);
+
+    // Set up randomization (ndnSIM-style)
+    if (m_randomize == "uniform")
+    {
+        m_random = CreateObject<UniformRandomVariable>();
+        m_random->SetAttribute("Min", DoubleValue(0.0));
+        m_random->SetAttribute("Max", DoubleValue(2.0 / m_frequency));
+    }
+    else if (m_randomize == "exponential")
+    {
+        m_random = CreateObject<ExponentialRandomVariable>();
+        m_random->SetAttribute("Mean", DoubleValue(1.0 / m_frequency));
+        m_random->SetAttribute("Bound", DoubleValue(50.0 / m_frequency));
+    }
+
+    // Register for Data received notifications from the Go bridge
+    std::string prefix = m_prefix;
+    RegisterDataReceivedCallback(GetNode()->GetId(),
+        [this, prefix](uint32_t dataSize, const std::string& dataName) {
+            // Only count Data matching our application prefix
+            if (dataName.rfind(prefix, 0) != 0)
+            {
+                return;
+            }
+            NS_LOG_INFO("t=" << Simulator::Now().GetSeconds() << "s node="
+                        << GetNode()->GetId() << " Received Data (" << dataSize << " bytes)");
+            m_dataReceivedTrace(dataSize);
+        });
+
     SendInterest();
 }
 
@@ -215,9 +269,11 @@ NdndConsumer::SendInterest()
     }
 
     // Encode and inject Interest into the local forwarder
-    auto wire = EncodeInterest(m_prefix, m_seqNo);
-    NS_LOG_INFO("Sending Interest " << m_prefix << "/" << m_seqNo
-                                     << " (" << wire.size() << " bytes)");
+    uint32_t lifetimeMs = static_cast<uint32_t>(m_lifetime.GetMilliSeconds());
+    auto wire = EncodeInterest(m_prefix, m_seqNo, lifetimeMs);
+    NS_LOG_INFO("t=" << Simulator::Now().GetSeconds() << "s node="
+                << GetNode()->GetId() << " Sending Interest " << m_prefix << "/" << m_seqNo
+                << " (" << wire.size() << " bytes)");
 
     // Deliver to the node's internal app face (face 1)
     NdndSimReceivePacket(GetNode()->GetId(), UINT32_MAX, wire.data(), wire.size());
@@ -225,10 +281,19 @@ NdndConsumer::SendInterest()
     m_interestSentTrace(m_seqNo);
     m_seqNo++;
 
-    // Schedule next Interest
+    // Schedule next Interest (with optional randomization)
     if (m_frequency > 0)
     {
-        m_sendEvent = Simulator::Schedule(Seconds(1.0 / m_frequency),
+        Time delay;
+        if (m_random)
+        {
+            delay = Seconds(m_random->GetValue());
+        }
+        else
+        {
+            delay = Seconds(1.0 / m_frequency);
+        }
+        m_sendEvent = Simulator::Schedule(delay,
                                            &NdndConsumer::SendInterest, this);
     }
 }

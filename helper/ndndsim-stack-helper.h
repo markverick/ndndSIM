@@ -12,6 +12,7 @@
 #include "ns3/ptr.h"
 
 #include <string>
+#include <vector>
 
 namespace ns3
 {
@@ -86,6 +87,31 @@ class NdndStackHelper
                            const std::string& prefix,
                            uint64_t faceId,
                            uint64_t cost);
+
+    /**
+     * Calculate shortest-path routes from each producer to all other nodes.
+     *
+     * Uses Dijkstra's algorithm on the ns-3 channel graph with link delay
+     * as the metric. On each node, installs a FIB entry pointing to the
+     * interface that leads toward the producer along the shortest path.
+     *
+     * \param prefix NDN name prefix to route
+     * \param producers nodes that serve this prefix (producers)
+     * \param allNodes all nodes in the topology
+     */
+    static void CalculateRoutes(const std::string& prefix,
+                                 NodeContainer producers,
+                                 NodeContainer allNodes);
+
+    /**
+     * Enable DV routing on all nodes in the container.
+     * Each node gets a DV router that discovers routes dynamically
+     * via advertisement exchange on its connected faces.
+     *
+     * \param network the NDN network prefix (e.g., "/ndn")
+     * \param nodes container of nodes to enable DV on
+     */
+    static void EnableDvRouting(const std::string& network, NodeContainer nodes);
 };
 
 } // namespace ndndsim

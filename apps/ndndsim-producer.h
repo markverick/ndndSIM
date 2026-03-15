@@ -9,6 +9,7 @@
 
 #include "../model/ndndsim-app.h"
 
+#include "ns3/nstime.h"
 #include "ns3/string.h"
 #include "ns3/uinteger.h"
 #include "ns3/traced-callback.h"
@@ -39,6 +40,7 @@ class NdndProducer : public NdndApp
   private:
     std::string m_prefix;       ///< NDN name prefix to serve
     uint32_t m_payloadSize;     ///< Size of Data payload in bytes
+    Time m_freshness;           ///< FreshnessPeriod of Data (ndnSIM: Freshness)
 
     /// Trace for satisfied Interests
     TracedCallback<uint32_t /* payloadSize */> m_dataSentTrace;

@@ -79,6 +79,12 @@ DataSentTraceCallback(NdndRateTracer* tracer, uint32_t nodeId, uint32_t payloadS
 }
 
 void
+DataReceivedTraceCallback(NdndRateTracer* tracer, uint32_t nodeId, uint32_t dataSize)
+{
+    tracer->DataReceivedCallback(nodeId, dataSize);
+}
+
+void
 NdndRateTracer::ConnectNode(Ptr<Node> node)
 {
     uint32_t nodeId = node->GetId();
@@ -86,14 +92,31 @@ NdndRateTracer::ConnectNode(Ptr<Node> node)
 
     std::string basePath = "/NodeList/" + std::to_string(nodeId) + "/ApplicationList/*/";
 
+    // NdndConsumer
     std::string consumerPath = basePath + "$ns3::ndndsim::NdndConsumer";
     if (Config::LookupMatches(consumerPath).GetN() > 0)
     {
         Config::ConnectWithoutContext(
             consumerPath + "/InterestSent",
             MakeBoundCallback(&InterestSentTraceCallback, this, nodeId));
+        Config::ConnectWithoutContext(
+            consumerPath + "/DataReceived",
+            MakeBoundCallback(&DataReceivedTraceCallback, this, nodeId));
     }
 
+    // NdndConsumerZipf
+    std::string zipfPath = basePath + "$ns3::ndndsim::NdndConsumerZipf";
+    if (Config::LookupMatches(zipfPath).GetN() > 0)
+    {
+        Config::ConnectWithoutContext(
+            zipfPath + "/InterestSent",
+            MakeBoundCallback(&InterestSentTraceCallback, this, nodeId));
+        Config::ConnectWithoutContext(
+            zipfPath + "/DataReceived",
+            MakeBoundCallback(&DataReceivedTraceCallback, this, nodeId));
+    }
+
+    // NdndProducer
     std::string producerPath = basePath + "$ns3::ndndsim::NdndProducer";
     if (Config::LookupMatches(producerPath).GetN() > 0)
     {
@@ -117,6 +140,13 @@ NdndRateTracer::DataSentCallback(uint32_t nodeId, uint32_t payloadSize)
 }
 
 void
+NdndRateTracer::DataReceivedCallback(uint32_t nodeId, uint32_t dataSize)
+{
+    m_counters[nodeId].dataReceived++;
+    m_counters[nodeId].dataReceivedBytes += dataSize;
+}
+
+void
 NdndRateTracer::PeriodicPrint()
 {
     double timeNow = Simulator::Now().GetSeconds();
@@ -134,11 +164,19 @@ NdndRateTracer::PeriodicPrint()
             m_out << timeNow << "," << nodeId << ",DataSent," << counters.data << "," << kb
                   << std::endl;
         }
+        if (counters.dataReceived > 0)
+        {
+            double kb = static_cast<double>(counters.dataReceivedBytes) / 1024.0;
+            m_out << timeNow << "," << nodeId << ",DataReceived," << counters.dataReceived << ","
+                  << kb << std::endl;
+        }
 
         // Reset counters for next period
         counters.interests = 0;
         counters.data = 0;
         counters.dataBytes = 0;
+        counters.dataReceived = 0;
+        counters.dataReceivedBytes = 0;
     }
 
     m_printEvent = Simulator::Schedule(m_period, &NdndRateTracer::PeriodicPrint, this);

@@ -61,16 +61,20 @@ class NdndRateTracer
     void ConnectNode(Ptr<Node> node);
     void InterestSentCallback(uint32_t nodeId, uint32_t seqNo);
     void DataSentCallback(uint32_t nodeId, uint32_t payloadSize);
+    void DataReceivedCallback(uint32_t nodeId, uint32_t dataSize);
     void PeriodicPrint();
 
     friend void InterestSentTraceCallback(NdndRateTracer*, uint32_t, uint32_t);
     friend void DataSentTraceCallback(NdndRateTracer*, uint32_t, uint32_t);
+    friend void DataReceivedTraceCallback(NdndRateTracer*, uint32_t, uint32_t);
 
     struct NodeCounters
     {
         uint32_t interests = 0;
         uint32_t data = 0;
         uint64_t dataBytes = 0;
+        uint32_t dataReceived = 0;
+        uint64_t dataReceivedBytes = 0;
     };
 
     std::ofstream m_out;

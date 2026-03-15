@@ -90,6 +90,7 @@ build_lib(
         ${libnetwork}
         ${libinternet}
         ${libpoint-to-point}
+        ${libpoint-to-point-layout}
         ${libmobility}
         ndndsim_go_static
     TEST_SOURCES

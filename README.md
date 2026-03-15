@@ -46,12 +46,18 @@ time so the Go forwarder runs deterministically under ns-3's scheduler.
 
 ## Building
 
-ndndSIM lives in `contrib/ndndSIM/` inside your ns-3 tree. The build system
-automatically compiles the Go forwarder into a C archive and links it with the
-C++ module.
+ndndSIM lives in `contrib/ndndSIM/` inside your ns-3 tree. The NDNd Go
+forwarder is included as a git submodule.
 
 ```bash
+# Clone (if you haven't already)
+cd ns-3-dev-git/contrib
+git clone <ndndSIM-repo-url> ndndSIM
+cd ndndSIM
+git submodule update --init
+
 # Configure (only needed once)
+cd ../..
 ./ns3 configure --enable-examples --enable-tests
 
 # Build
@@ -155,8 +161,12 @@ Sends Interests at a configurable rate with sequentially numbered names.
 |-------------|----------|---------------|-------------|
 | `Prefix`    | string   | `"/ndn/test"` | NDN name prefix for Interests |
 | `Frequency` | double   | `1.0`         | Interests per second |
+| `LifeTime`  | Time     | `2s`          | Interest lifetime (expiry in PIT) |
+| `Randomize` | string   | `"none"`      | Inter-Interest gap randomization: `"none"`, `"uniform"`, or `"exponential"` |
 
-**Trace source:** `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+**Trace sources:**
+- `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+- `DataReceived(uint32_t dataSize)` — fired on each Data received.
 
 #### `NdndConsumerZipf` — Zipf-Mandelbrot Consumer
 
@@ -176,7 +186,9 @@ The Zipf-Mandelbrot PMF is:
 
 $$P(k) = \frac{1/(k+q)^s}{\sum_{i=1}^{N} 1/(i+q)^s}$$
 
-**Trace source:** `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+**Trace sources:**
+- `InterestSent(uint32_t seqNo)` — fired on each Interest sent.
+- `DataReceived(uint32_t dataSize)` — fired on each Data received (inherited from `NdndConsumer`).
 
 #### `NdndProducer` — Data Producer
 
@@ -186,6 +198,7 @@ Listens for Interests matching its prefix and replies with Data packets.
 |---------------|----------|---------------|-------------|
 | `Prefix`      | string   | `"/ndn/test"` | Name prefix to serve |
 | `PayloadSize` | uint32_t | `1024`        | Data payload size in bytes |
+| `Freshness`   | Time     | `0ms`         | FreshnessPeriod set on produced Data |
 
 **Trace source:** `DataSent(uint32_t payloadSize)` — fired on each Data sent.
 
@@ -205,14 +218,34 @@ stackHelper.InitializeBridge();
 stackHelper.Install(nodes);                           // NodeContainer
 Ptr<NdndStack> stack = stackHelper.Install(node);     // Single node
 
-// Routing
+// Static routing
 stackHelper.AddRoutesToAll("/prefix", nodes);          // All-to-all routes
 stackHelper.AddRoute(node, "/prefix", ifIndex, cost);  // By interface index
 stackHelper.AddRoute(node, "/prefix", faceId, cost);   // By face ID
 
+// Dijkstra shortest-path routing (prefix → producer nodes → all nodes)
+NodeContainer producers;
+producers.Add(producerNode);
+stackHelper.CalculateRoutes("/prefix", producers, allNodes);
+
+// DV routing (automatic route discovery via NDNd distance-vector protocol)
+stackHelper.EnableDvRouting("/ndn", allNodes);
+
 // Cleanup (call after Simulator::Destroy)
 stackHelper.DestroyBridge();
 ```
+
+**Routing strategies:**
+
+| Strategy | Method | When to use |
+|----------|--------|-------------|
+| Manual | `AddRoute()`, `AddRoutesToAll()` | Full control over FIB entries |
+| Dijkstra | `CalculateRoutes(prefix, producers, nodes)` | Metric-weighted shortest paths computed before simulation |
+| DV | `EnableDvRouting(routerPrefix, nodes)` | Routes discovered at runtime via NDNd's distance-vector protocol with SVS sync |
+
+When using DV routing, start the consumer after a convergence delay (typically
+3–5 seconds for small topologies) to allow route advertisements to propagate.
+Producers automatically announce their prefixes to the DV protocol.
 
 #### `NdndAppHelper` — Application Factory
 
@@ -313,6 +346,14 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-csma` | 3 nodes on a shared CSMA bus |
 | `ndndsim-wifi` | 2 nodes over 802.11a WiFi Ad-Hoc |
 
+### DV Routing Scenarios
+
+| Example | Description |
+|---------|-------------|
+| `ndndsim-grid-dv` | 3×3 grid with DV routing — automatic route discovery |
+| `ndndsim-dv-multipath` | Diamond topology with redundant paths via DV |
+| `ndndsim-dv-convergence` | 4×4 grid showing DV convergence ramp-up (configurable grid size, link delay, sim time) |
+
 ### Advanced Scenarios
 
 | Example | Description |
@@ -373,17 +414,21 @@ class NdndPing : public ndndsim::NdndApp
 ## Running Tests
 
 ```bash
-# Run the full ndndSIM test suite (18 tests)
+# Run the full ndndSIM test suite (30 tests)
 ./ns3 run test-runner -- --suite=ndndsim --verbose
 
 # With extensive (integration) tests
 ./ns3 run test-runner -- --suite=ndndsim --verbose --fullness=EXTENSIVE
 ```
 
-Tests cover TypeId registration, object lifecycle, attribute configuration,
-stack installation, routing, end-to-end forwarding, sequence ordering,
-multi-consumer scenarios, EtherType filtering, cleanup, app lifecycle timing,
-and link failure/recovery.
+Tests cover TypeId registration, object lifecycle, attribute configuration
+(Consumer LifeTime/Randomize, Producer Freshness, Zipf parameters),
+stack installation, static routing, Dijkstra shortest-path routing,
+DV routing (init, end-to-end, grid, multi-producer), end-to-end trace
+verification (InterestSent + DataReceived + DataSent), multi-prefix
+topologies, topology reader correctness, sequence ordering,
+multi-consumer scenarios, EtherType filtering, cleanup, app lifecycle
+timing, and link failure/recovery.
 
 ## Module Structure
 
@@ -407,7 +452,10 @@ contrib/ndndSIM/
 ├── examples/
 │   ├── ndndsim-simple.cc         # 3-node linear
 │   ├── ndndsim-tree.cc           # Binary tree
-│   ├── ndndsim-grid.cc           # 3×3 grid
+│   ├── ndndsim-grid.cc           # 3×3 grid (Dijkstra routing)
+│   ├── ndndsim-grid-dv.cc        # 3×3 grid (DV routing)
+│   ├── ndndsim-dv-multipath.cc   # Diamond topology (DV multipath)
+│   ├── ndndsim-dv-convergence.cc # 4×4 grid (DV convergence)
 │   ├── ndndsim-csma.cc           # CSMA bus
 │   ├── ndndsim-wifi.cc           # WiFi Ad-Hoc
 │   ├── ndndsim-link-failure.cc   # Link failure scenario
@@ -417,7 +465,7 @@ contrib/ndndSIM/
 │   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
 │   └── topologies/               # Topology definition files
 ├── test/
-│   └── ndndsim-test-suite.cc     # 18 unit/integration tests
+│   └── ndndsim-test-suite.cc     # 30 unit/integration tests
 └── ndnd/                         # NDNd Go forwarder (submodule)
     └── sim/                      # Go simulation bridge package
 ```
@@ -448,9 +496,14 @@ contrib/ndndSIM/
    simulation time (`Simulator::Now()`) and for scheduling/canceling events
    (`Simulator::Schedule()`, `Simulator::Cancel()`).
 
-6. **Routing**: `NdndSimAddRoute()` inserts FIB entries in the Go forwarder.
-   `AddRoutesToAll()` computes shortest-path next hops and installs routes on
-   every node.
+6. **Routing**: Three routing strategies are available:
+   - **Manual**: `AddRoute()` inserts individual FIB entries.
+   - **Dijkstra**: `CalculateRoutes()` computes metric-weighted shortest paths
+     from every node to the producer nodes and installs FIB entries.
+   - **DV (Distance-Vector)**: `EnableDvRouting()` starts NDNd's real DV
+     protocol with SVS-based state synchronization. Routes are discovered
+     automatically—application prefixes are announced by producers and
+     propagated through the network via DV advertisements.
 
 ## License
 

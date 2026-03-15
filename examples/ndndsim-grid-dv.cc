@@ -1,7 +1,9 @@
 /*
- * ndndSIM Grid Topology Example
+ * ndndSIM Grid DV Routing Example
  *
- * Equivalent to old ndnSIM: ndn-grid.cpp
+ * Same topology as ndndsim-grid but uses DV routing instead of
+ * BFS-based CalculateRoutes. Routes are discovered dynamically
+ * via distance-vector advertisement exchange.
  *
  * Topology: 3x3 PointToPoint Grid
  *
@@ -12,12 +14,11 @@
  *      ( ) ------ ( ) -- (producer)
  *
  * All links are 1Mbps with 10ms delay.
- * Consumer at (0,0) sends 100 Interests/sec to /ndn/grid/<seqno>.
- * Producer at (2,2) replies with 1024-byte Data.
- * Routes are configured along the shortest path through the grid.
+ * DV routing is enabled at simulation start. Consumer begins at
+ * t=5 to allow DV convergence.
  *
  * Usage:
- *   ./ns3 run ndndsim-grid
+ *   ./ns3 run ndndsim-grid-dv
  */
 
 #include "ns3/core-module.h"
@@ -57,58 +58,47 @@ main(int argc, char* argv[])
 
     ndndsim::NdndStackHelper stackHelper;
 
-    // Install on all grid nodes
-    for (uint32_t row = 0; row < 3; ++row)
-    {
-        for (uint32_t col = 0; col < 3; ++col)
-        {
-            stackHelper.Install(grid.GetNode(row, col));
-        }
-    }
-
-    // ─── Routing & Applications ───────────────────────────────────
-    // BFS-based shortest-path routing from producer to all nodes.
-
-    std::string prefix = "/ndn/grid";
-
-    // Collect all nodes
     NodeContainer allNodes;
     for (uint32_t row = 0; row < 3; ++row)
     {
         for (uint32_t col = 0; col < 3; ++col)
         {
+            stackHelper.Install(grid.GetNode(row, col));
             allNodes.Add(grid.GetNode(row, col));
         }
     }
 
+    // ─── DV Routing ────────────────────────────────────────────────
+    // Enable DV on all nodes. Routes will be discovered dynamically.
+
+    ndndsim::NdndStackHelper::EnableDvRouting("/ndn", allNodes);
+
     // ─── Applications ──────────────────────────────────────────────
+
+    std::string prefix = "/ndn/grid";
 
     Ptr<Node> consumer = grid.GetNode(0, 0);
     Ptr<Node> producer = grid.GetNode(2, 2);
 
-    ndndsim::NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
-    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
-    consumerHelper.SetAttribute("Frequency", DoubleValue(100.0)); // 100 Interests/sec
-    auto consumerApps = consumerHelper.Install(consumer);
-    consumerApps.Start(Seconds(1.0));
-    consumerApps.Stop(Seconds(10.0));
-
+    // Producer starts early so DV can propagate prefix advertisements
     ndndsim::NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
     producerHelper.SetAttribute("Prefix", StringValue(prefix));
     producerHelper.SetAttribute("PayloadSize", UintegerValue(1024));
     auto producerApps = producerHelper.Install(producer);
     producerApps.Start(Seconds(0.5));
-    producerApps.Stop(Seconds(10.0));
+    producerApps.Stop(Seconds(20.0));
 
-    // ─── Routing ───────────────────────────────────────────────────
-    // Compute shortest-path routes from the producer to all nodes.
-    NodeContainer producerNodes;
-    producerNodes.Add(producer);
-    ndndsim::NdndStackHelper::CalculateRoutes(prefix, producerNodes, allNodes);
+    // Consumer starts after DV convergence
+    ndndsim::NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(100.0)); // 100 Interests/sec
+    auto consumerApps = consumerHelper.Install(consumer);
+    consumerApps.Start(Seconds(5.0));
+    consumerApps.Stop(Seconds(15.0));
 
     // ─── Simulation ────────────────────────────────────────────────
 
-    Simulator::Stop(Seconds(11.0));
+    Simulator::Stop(Seconds(20.0));
     Simulator::Run();
 
     ndndsim::NdndStackHelper::DestroyBridge();

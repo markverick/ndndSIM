@@ -63,6 +63,7 @@ class NdndConsumerZipf : public NdndApp
     std::vector<double> m_cdf; ///< Precomputed CDF for Zipf-Mandelbrot
 
     TracedCallback<uint32_t /* seqNo */> m_interestSentTrace;
+    TracedCallback<uint32_t /* dataSize */> m_dataReceivedTrace;
 };
 
 } // namespace ndndsim

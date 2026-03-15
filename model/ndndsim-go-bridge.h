@@ -37,6 +37,13 @@ extern "C"
     /** Called when NDNd needs the current simulation time in nanoseconds. */
     typedef int64_t (*NdndSimGetTimeNsFunc)(void);
 
+    /** Called when NDNd producer generates a Data packet. */
+    typedef void (*NdndSimDataProducedFunc)(uint32_t nodeId, uint32_t dataSize);
+
+    /** Called when NDNd delivers Data to a consumer application. */
+    typedef void (*NdndSimDataReceivedFunc)(uint32_t nodeId, uint32_t dataSize,
+                                            const char* dataName, uint32_t nameLen);
+
     /*
      * Functions exported by the Go shared library.
      * These are implemented in sim/cgo_export.go.
@@ -46,7 +53,9 @@ extern "C"
     extern void NdndSimInit(NdndSimSendPacketFunc sendPacketCb,
                              NdndSimScheduleEventFunc scheduleEventCb,
                              NdndSimCancelEventFunc cancelEventCb,
-                             NdndSimGetTimeNsFunc getTimeNsCb);
+                             NdndSimGetTimeNsFunc getTimeNsCb,
+                             NdndSimDataProducedFunc dataProducedCb,
+                             NdndSimDataReceivedFunc dataReceivedCb);
 
     /** Create a new NDNd simulation node. Returns 0 on success, -1 on error. */
     extern int NdndSimCreateNode(uint32_t nodeId);
@@ -89,13 +98,27 @@ extern "C"
     extern int NdndSimRegisterProducer(uint32_t nodeId,
                                         char* prefixStr,
                                         int prefixLen,
-                                        uint32_t payloadSize);
+                                        uint32_t payloadSize,
+                                        uint32_t freshnessMs);
+
+    /** Start DV routing on a node. Returns 0 on success. */
+    extern int NdndSimStartDv(uint32_t nodeId,
+                               char* networkStr,
+                               int networkLen,
+                               char* routerStr,
+                               int routerLen);
+
+    /** Stop DV routing on a node. */
+    extern void NdndSimStopDv(uint32_t nodeId);
 
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 
 #ifdef __cplusplus
 }
+
+#include <functional>
+#include <string>
 
 namespace ns3
 {
@@ -107,6 +130,14 @@ void InitGoBridge();
 
 /** Cleanup the Go bridge. */
 void DestroyGoBridge();
+
+/** Register a callback invoked when Go produces Data on a node. */
+void RegisterDataProducedCallback(uint32_t nodeId, std::function<void(uint32_t)> cb);
+
+/** Register a callback invoked when Go delivers Data to a consumer on a node.
+ *  The callback receives (dataSize, dataName). */
+void RegisterDataReceivedCallback(uint32_t nodeId,
+                                   std::function<void(uint32_t, const std::string&)> cb);
 
 } // namespace ndndsim
 } // namespace ns3

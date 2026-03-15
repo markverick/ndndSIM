@@ -69,7 +69,11 @@ NdndConsumerZipf::GetTypeId()
             .AddTraceSource("InterestSent",
                              "Trace fired when an Interest is sent",
                              MakeTraceSourceAccessor(&NdndConsumerZipf::m_interestSentTrace),
-                             "ns3::ndndsim::NdndConsumerZipf::InterestSentCallback");
+                             "ns3::ndndsim::NdndConsumerZipf::InterestSentCallback")
+            .AddTraceSource("DataReceived",
+                             "Trace fired when Data is received from the network",
+                             MakeTraceSourceAccessor(&NdndConsumerZipf::m_dataReceivedTrace),
+                             "ns3::ndndsim::NdndConsumerZipf::DataReceivedCallback");
     return tid;
 }
 
@@ -251,6 +255,21 @@ NdndConsumerZipf::OnStart()
                                                    << " freq=" << m_frequency
                                                    << " N=" << m_numContents
                                                    << " q=" << m_q << " s=" << m_s);
+
+    // Register for Data received notifications from the Go bridge
+    std::string prefix = m_prefix;
+    RegisterDataReceivedCallback(GetNode()->GetId(),
+        [this, prefix](uint32_t dataSize, const std::string& dataName) {
+            // Only count Data matching our application prefix
+            if (dataName.rfind(prefix, 0) != 0)
+            {
+                return;
+            }
+            NS_LOG_INFO("t=" << Simulator::Now().GetSeconds() << "s node="
+                        << GetNode()->GetId() << " Received Data (" << dataSize << " bytes)");
+            m_dataReceivedTrace(dataSize);
+        });
+
     SendInterest();
 }
 
@@ -274,8 +293,9 @@ NdndConsumerZipf::SendInterest()
     uint32_t seqNo = GetNextSeqNo();
 
     auto wire = EncodeInterest(m_prefix, seqNo);
-    NS_LOG_INFO("Sending Interest " << m_prefix << "/" << seqNo
-                                     << " (" << wire.size() << " bytes)");
+    NS_LOG_INFO("t=" << Simulator::Now().GetSeconds() << "s node="
+                << GetNode()->GetId() << " Sending Interest " << m_prefix << "/" << seqNo
+                << " (" << wire.size() << " bytes)");
 
     NdndSimReceivePacket(GetNode()->GetId(), UINT32_MAX, wire.data(), wire.size());
 

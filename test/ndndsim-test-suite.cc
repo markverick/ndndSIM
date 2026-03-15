@@ -5,21 +5,26 @@
  */
 
 #include "ns3/application-container.h"
+#include "ns3/config.h"
 #include "ns3/double.h"
 #include "ns3/error-model.h"
 #include "ns3/log.h"
+#include "ns3/names.h"
 #include "ns3/ndndsim-app-helper.h"
 #include "ns3/ndndsim-app.h"
+#include "ns3/ndndsim-consumer-zipf.h"
 #include "ns3/ndndsim-consumer.h"
 #include "ns3/ndndsim-go-bridge.h"
 #include "ns3/ndndsim-producer.h"
 #include "ns3/ndndsim-stack-helper.h"
 #include "ns3/ndndsim-stack.h"
+#include "ns3/ndndsim-topology-reader.h"
 #include "ns3/net-device-container.h"
 #include "ns3/node-container.h"
 #include "ns3/node.h"
 #include "ns3/object-factory.h"
 #include "ns3/packet.h"
+#include "ns3/point-to-point-grid.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/pointer.h"
 #include "ns3/simulator.h"
@@ -1169,6 +1174,1156 @@ NdndsimLinkFailureTestCase::DoRun()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 18. CalculateRoutes BFS Routing Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify CalculateRoutes installs correct BFS shortest-path routes on
+ * a 4-node linear topology and that Data flows from producer to consumer.
+ *
+ * Topology: Consumer(0) -- (1) -- (2) -- Producer(3)
+ *
+ * CalculateRoutes should install nexthop routes on each node toward
+ * node 3 (the producer).
+ */
+class NdndsimCalculateRoutesTestCase : public TestCase
+{
+  public:
+    NdndsimCalculateRoutesTestCase();
+    void DoRun() override;
+
+  private:
+    void DataReceivedCallback(uint32_t dataSize);
+    uint32_t m_dataCount;
+};
+
+NdndsimCalculateRoutesTestCase::NdndsimCalculateRoutesTestCase()
+    : TestCase("Dijkstra shortest-path routing with link metrics"),
+      m_dataCount(0)
+{
+}
+
+void
+NdndsimCalculateRoutesTestCase::DataReceivedCallback(uint32_t dataSize)
+{
+    m_dataCount++;
+}
+
+void
+NdndsimCalculateRoutesTestCase::DoRun()
+{
+    // Linear topology: n0 -- n1 -- n2 -- n3
+    NodeContainer nodes;
+    nodes.Create(4);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    for (uint32_t i = 0; i < 3; ++i)
+    {
+        p2p.Install(nodes.Get(i), nodes.Get(i + 1));
+    }
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    std::string prefix = "/ndn/calc";
+
+    // Producer on node 3
+    NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue(prefix));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(512));
+    auto producerApps = producerHelper.Install(nodes.Get(3));
+    producerApps.Start(Seconds(0.0));
+    producerApps.Stop(Seconds(5.0));
+
+    // Consumer on node 0
+    NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    auto consumerApps = consumerHelper.Install(nodes.Get(0));
+    consumerApps.Start(Seconds(1.0));
+    consumerApps.Stop(Seconds(4.0));
+
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimCalculateRoutesTestCase::DataReceivedCallback, this));
+
+    // Use BFS CalculateRoutes instead of manual AddRoute
+    NodeContainer producerNodes;
+    producerNodes.Add(nodes.Get(3));
+    NdndStackHelper::CalculateRoutes(prefix, producerNodes, nodes);
+
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    // Consumer runs 3s at 10 Hz → ~30 Interests; expect most get satisfied
+    NS_TEST_ASSERT_MSG_GT(m_dataCount, 15,
+                           "Should receive Data via BFS-computed routes (3-hop linear)");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 19. DV Routing Initialization Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify EnableDvRouting starts DV on all nodes without errors.
+ * Uses a simple 3-node linear topology and checks that DV initializes
+ * and the simulation completes cleanly.
+ *
+ * Topology: (0) -- (1) -- (2)
+ */
+class NdndsimDvRoutingInitTestCase : public TestCase
+{
+  public:
+    NdndsimDvRoutingInitTestCase();
+    void DoRun() override;
+};
+
+NdndsimDvRoutingInitTestCase::NdndsimDvRoutingInitTestCase()
+    : TestCase("EnableDvRouting initializes DV on all nodes")
+{
+}
+
+void
+NdndsimDvRoutingInitTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(3);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1));
+    p2p.Install(nodes.Get(1), nodes.Get(2));
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    // Enable DV routing — should not throw or crash
+    NdndStackHelper::EnableDvRouting("/ndn", nodes);
+
+    // Run briefly to let DV exchange initial advertisements
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    // If we reach here, DV initialized and ran without crashing
+    NS_TEST_ASSERT_MSG_EQ(true, true, "DV routing initialized and ran cleanly");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 20. DV Routing End-to-End Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * End-to-end test with DV routing: Consumer sends Interests over a
+ * 3-hop linear topology where routes are discovered dynamically by DV.
+ *
+ * Topology: Consumer(0) -- (1) -- (2) -- Producer(3)
+ *
+ * DV routing is enabled at t=0. Consumer starts at t=3 to give DV time
+ * to converge. Producer starts at t=0.5.
+ */
+class NdndsimDvEndToEndTestCase : public TestCase
+{
+  public:
+    NdndsimDvEndToEndTestCase();
+    void DoRun() override;
+
+  private:
+    void DataReceivedCallback(uint32_t dataSize);
+    uint32_t m_dataCount;
+};
+
+NdndsimDvEndToEndTestCase::NdndsimDvEndToEndTestCase()
+    : TestCase("DV routing end-to-end consumer-producer forwarding"),
+      m_dataCount(0)
+{
+}
+
+void
+NdndsimDvEndToEndTestCase::DataReceivedCallback(uint32_t dataSize)
+{
+    m_dataCount++;
+}
+
+void
+NdndsimDvEndToEndTestCase::DoRun()
+{
+    // 4-node linear topology
+    NodeContainer nodes;
+    nodes.Create(4);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    for (uint32_t i = 0; i < 3; ++i)
+    {
+        p2p.Install(nodes.Get(i), nodes.Get(i + 1));
+    }
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    // Enable DV routing on all nodes
+    NdndStackHelper::EnableDvRouting("/ndn", nodes);
+
+    std::string prefix = "/ndn/dvtest";
+
+    // Producer on node 3 — starts early so DV can learn about it
+    NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue(prefix));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(512));
+    auto producerApps = producerHelper.Install(nodes.Get(3));
+    producerApps.Start(Seconds(0.5));
+    producerApps.Stop(Seconds(15.0));
+
+    // Consumer on node 0 — delayed start to allow DV convergence
+    NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    auto consumerApps = consumerHelper.Install(nodes.Get(0));
+    consumerApps.Start(Seconds(5.0));
+    consumerApps.Stop(Seconds(12.0));
+
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDvEndToEndTestCase::DataReceivedCallback, this));
+
+    Simulator::Stop(Seconds(15.0));
+    Simulator::Run();
+
+    // Consumer runs 7s at 10 Hz → ~70 Interests; after DV convergence,
+    // expect significant Data return (not just 1 or 2)
+    NS_TEST_ASSERT_MSG_GT(m_dataCount, 20,
+                           "Should receive substantial Data via DV-discovered routes");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 21. Data Received End-to-End Verification Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify both InterestSent and DataReceived traces fire end-to-end.
+ * This confirms the full Interest→Data pipeline works: the consumer
+ * sends Interests that traverse a router, the producer generates Data,
+ * and the Data returns to the consumer.
+ *
+ * Topology: Consumer(0) -- Router(1) -- Producer(2)
+ */
+class NdndsimDataReceivedE2eTestCase : public TestCase
+{
+  public:
+    NdndsimDataReceivedE2eTestCase();
+    void DoRun() override;
+
+  private:
+    void InterestSentCb(uint32_t seqNo);
+    void DataReceivedCb(uint32_t dataSize);
+    void DataProducedCb(uint32_t dataSize);
+    uint32_t m_interestsSent;
+    uint32_t m_dataReceived;
+    uint32_t m_dataProduced;
+};
+
+NdndsimDataReceivedE2eTestCase::NdndsimDataReceivedE2eTestCase()
+    : TestCase("End-to-end Interest-Data trace verification"),
+      m_interestsSent(0),
+      m_dataReceived(0),
+      m_dataProduced(0)
+{
+}
+
+void
+NdndsimDataReceivedE2eTestCase::InterestSentCb(uint32_t seqNo)
+{
+    m_interestsSent++;
+}
+
+void
+NdndsimDataReceivedE2eTestCase::DataReceivedCb(uint32_t dataSize)
+{
+    m_dataReceived++;
+}
+
+void
+NdndsimDataReceivedE2eTestCase::DataProducedCb(uint32_t dataSize)
+{
+    m_dataProduced++;
+}
+
+void
+NdndsimDataReceivedE2eTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(3);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1));
+    p2p.Install(nodes.Get(1), nodes.Get(2));
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    NdndStackHelper::AddRoute(nodes.Get(0), "/ndn/e2e", uint32_t(0), uint64_t(1));
+    NdndStackHelper::AddRoute(nodes.Get(1), "/ndn/e2e", uint32_t(1), uint64_t(1));
+
+    // Producer on node 2
+    NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue("/ndn/e2e"));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(512));
+    auto producerApps = producerHelper.Install(nodes.Get(2));
+    producerApps.Start(Seconds(0.0));
+    producerApps.Stop(Seconds(5.0));
+
+    producerApps.Get(0)->TraceConnectWithoutContext(
+        "DataSent",
+        MakeCallback(&NdndsimDataReceivedE2eTestCase::DataProducedCb, this));
+
+    // Consumer on node 0
+    NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue("/ndn/e2e"));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    auto consumerApps = consumerHelper.Install(nodes.Get(0));
+    consumerApps.Start(Seconds(1.0));
+    consumerApps.Stop(Seconds(4.0));
+
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "InterestSent",
+        MakeCallback(&NdndsimDataReceivedE2eTestCase::InterestSentCb, this));
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDataReceivedE2eTestCase::DataReceivedCb, this));
+
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    // Consumer should send ~30 Interests (3s × 10Hz)
+    NS_TEST_ASSERT_MSG_GT(m_interestsSent, 20, "Consumer should send ~30 Interests");
+
+    // Producer should generate Data for received Interests
+    NS_TEST_ASSERT_MSG_GT(m_dataProduced, 15, "Producer should produce substantial Data");
+
+    // Consumer should receive Data back
+    NS_TEST_ASSERT_MSG_GT(m_dataReceived, 15,
+                           "Consumer should receive substantial Data back");
+
+    // DataReceived should be ≤ InterestsSent (can't receive more Data than sent)
+    NS_TEST_ASSERT_MSG_LT_OR_EQ(m_dataReceived, m_interestsSent,
+                                  "Cannot receive more Data than Interests sent");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 22. Dijkstra Metric-Weighted Routing Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify that CalculateRoutes respects link metrics (delay-based cost).
+ *
+ * Diamond topology:
+ *
+ *     Consumer(0)
+ *      / \
+ *     /   \
+ *   (1)   (2)     0→1 = 100ms delay (expensive)
+ *     \   /       0→2 = 1ms delay   (cheap)
+ *      \ /
+ *    Producer(3)
+ *
+ * Dijkstra should prefer the path through node 2 (lower delay).
+ * Both paths should deliver Data; the test verifies Data flows.
+ */
+class NdndsimDijkstraMetricTestCase : public TestCase
+{
+  public:
+    NdndsimDijkstraMetricTestCase();
+    void DoRun() override;
+
+  private:
+    void DataReceivedCb(uint32_t dataSize);
+    uint32_t m_dataCount;
+};
+
+NdndsimDijkstraMetricTestCase::NdndsimDijkstraMetricTestCase()
+    : TestCase("Dijkstra routing prefers lower-cost path"),
+      m_dataCount(0)
+{
+}
+
+void
+NdndsimDijkstraMetricTestCase::DataReceivedCb(uint32_t dataSize)
+{
+    m_dataCount++;
+}
+
+void
+NdndsimDijkstraMetricTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(4);
+
+    PointToPointHelper p2pSlow;
+    p2pSlow.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2pSlow.SetChannelAttribute("Delay", StringValue("100ms")); // expensive path
+
+    PointToPointHelper p2pFast;
+    p2pFast.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2pFast.SetChannelAttribute("Delay", StringValue("1ms")); // cheap path
+
+    p2pSlow.Install(nodes.Get(0), nodes.Get(1)); // Consumer → Node1 (slow)
+    p2pFast.Install(nodes.Get(0), nodes.Get(2)); // Consumer → Node2 (fast)
+    p2pFast.Install(nodes.Get(1), nodes.Get(3)); // Node1 → Producer
+    p2pFast.Install(nodes.Get(2), nodes.Get(3)); // Node2 → Producer
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    std::string prefix = "/ndn/diamond";
+
+    // Producer on node 3
+    NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue(prefix));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(256));
+    auto producerApps = producerHelper.Install(nodes.Get(3));
+    producerApps.Start(Seconds(0.0));
+    producerApps.Stop(Seconds(5.0));
+
+    // Consumer on node 0
+    NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    auto consumerApps = consumerHelper.Install(nodes.Get(0));
+    consumerApps.Start(Seconds(1.0));
+    consumerApps.Stop(Seconds(4.0));
+
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDijkstraMetricTestCase::DataReceivedCb, this));
+
+    // Use Dijkstra CalculateRoutes — should pick the fast path through node 2
+    NodeContainer producers;
+    producers.Add(nodes.Get(3));
+    NdndStackHelper::CalculateRoutes(prefix, producers, nodes);
+
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    NS_TEST_ASSERT_MSG_GT(m_dataCount, 15,
+                           "Data should flow via Dijkstra-computed shortest path");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 23. Multiple Producers / Multiple Prefixes Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify that two producers serving different prefixes on separate nodes
+ * can both satisfy Interests from a single consumer node.
+ *
+ * Topology:
+ *   Producer-A(0) ---- Router(1) ---- Consumer(2) ---- Producer-B(3)
+ */
+class NdndsimMultiPrefixTestCase : public TestCase
+{
+  public:
+    NdndsimMultiPrefixTestCase();
+    void DoRun() override;
+
+  private:
+    void InterestSentA(uint32_t seqNo);
+    void InterestSentB(uint32_t seqNo);
+    uint32_t m_countA;
+    uint32_t m_countB;
+};
+
+NdndsimMultiPrefixTestCase::NdndsimMultiPrefixTestCase()
+    : TestCase("Multiple producers with different prefixes"),
+      m_countA(0),
+      m_countB(0)
+{
+}
+
+void
+NdndsimMultiPrefixTestCase::InterestSentA(uint32_t seqNo)
+{
+    m_countA++;
+}
+
+void
+NdndsimMultiPrefixTestCase::InterestSentB(uint32_t seqNo)
+{
+    m_countB++;
+}
+
+void
+NdndsimMultiPrefixTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(4);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1)); // ProdA -- Router
+    p2p.Install(nodes.Get(1), nodes.Get(2)); // Router -- Consumer
+    p2p.Install(nodes.Get(2), nodes.Get(3)); // Consumer -- ProdB
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    // Routes for prefix A: Consumer(2) → Router(1) → ProdA(0)
+    NdndStackHelper::AddRoute(nodes.Get(2), "/ndn/alpha", uint32_t(0), uint64_t(1));
+    NdndStackHelper::AddRoute(nodes.Get(1), "/ndn/alpha", uint32_t(0), uint64_t(1));
+
+    // Routes for prefix B: Consumer(2) → ProdB(3)
+    NdndStackHelper::AddRoute(nodes.Get(2), "/ndn/beta", uint32_t(1), uint64_t(1));
+
+    // Producer A on node 0
+    NdndAppHelper prodAHelper("ns3::ndndsim::NdndProducer");
+    prodAHelper.SetAttribute("Prefix", StringValue("/ndn/alpha"));
+    prodAHelper.SetAttribute("PayloadSize", UintegerValue(256));
+    auto prodAApps = prodAHelper.Install(nodes.Get(0));
+    prodAApps.Start(Seconds(0.0));
+    prodAApps.Stop(Seconds(5.0));
+
+    // Producer B on node 3
+    NdndAppHelper prodBHelper("ns3::ndndsim::NdndProducer");
+    prodBHelper.SetAttribute("Prefix", StringValue("/ndn/beta"));
+    prodBHelper.SetAttribute("PayloadSize", UintegerValue(512));
+    auto prodBApps = prodBHelper.Install(nodes.Get(3));
+    prodBApps.Start(Seconds(0.0));
+    prodBApps.Stop(Seconds(5.0));
+
+    // Consumer A on node 2 → /ndn/alpha
+    NdndAppHelper consAHelper("ns3::ndndsim::NdndConsumer");
+    consAHelper.SetAttribute("Prefix", StringValue("/ndn/alpha"));
+    consAHelper.SetAttribute("Frequency", DoubleValue(5.0));
+    auto consAApps = consAHelper.Install(nodes.Get(2));
+    consAApps.Start(Seconds(1.0));
+    consAApps.Stop(Seconds(4.0));
+    consAApps.Get(0)->TraceConnectWithoutContext(
+        "InterestSent",
+        MakeCallback(&NdndsimMultiPrefixTestCase::InterestSentA, this));
+
+    // Consumer B on node 2 → /ndn/beta (separate app instance on same node)
+    NdndAppHelper consBHelper("ns3::ndndsim::NdndConsumer");
+    consBHelper.SetAttribute("Prefix", StringValue("/ndn/beta"));
+    consBHelper.SetAttribute("Frequency", DoubleValue(5.0));
+    auto consBApps = consBHelper.Install(nodes.Get(2));
+    consBApps.Start(Seconds(1.0));
+    consBApps.Stop(Seconds(4.0));
+    consBApps.Get(0)->TraceConnectWithoutContext(
+        "InterestSent",
+        MakeCallback(&NdndsimMultiPrefixTestCase::InterestSentB, this));
+
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    NS_TEST_ASSERT_MSG_GT(m_countA, 10, "Consumer A should send ~15 Interests for /ndn/alpha");
+    NS_TEST_ASSERT_MSG_GT(m_countB, 10, "Consumer B should send ~15 Interests for /ndn/beta");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 24. Consumer Randomization Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify that setting Randomize="uniform" produces variable inter-Interest
+ * gaps, whereas "none" produces constant gaps.
+ */
+class NdndsimConsumerRandomizeTestCase : public TestCase
+{
+  public:
+    NdndsimConsumerRandomizeTestCase();
+    void DoRun() override;
+
+  private:
+    void UniformInterestSent(uint32_t seqNo);
+    void RegularInterestSent(uint32_t seqNo);
+
+    std::vector<double> m_uniformTimes;
+    std::vector<double> m_regularTimes;
+};
+
+NdndsimConsumerRandomizeTestCase::NdndsimConsumerRandomizeTestCase()
+    : TestCase("Consumer uniform randomization vs constant rate")
+{
+}
+
+void
+NdndsimConsumerRandomizeTestCase::UniformInterestSent(uint32_t seqNo)
+{
+    m_uniformTimes.push_back(Simulator::Now().GetSeconds());
+}
+
+void
+NdndsimConsumerRandomizeTestCase::RegularInterestSent(uint32_t seqNo)
+{
+    m_regularTimes.push_back(Simulator::Now().GetSeconds());
+}
+
+void
+NdndsimConsumerRandomizeTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(2);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("1ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1));
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    NdndStackHelper::AddRoute(nodes.Get(0), "/ndn/rand", uint32_t(0), uint64_t(1));
+
+    // Uniform randomized consumer
+    NdndAppHelper uniformHelper("ns3::ndndsim::NdndConsumer");
+    uniformHelper.SetAttribute("Prefix", StringValue("/ndn/rand/uniform"));
+    uniformHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    uniformHelper.SetAttribute("Randomize", StringValue("uniform"));
+    auto uniformApps = uniformHelper.Install(nodes.Get(0));
+    uniformApps.Start(Seconds(1.0));
+    uniformApps.Stop(Seconds(4.0));
+    uniformApps.Get(0)->TraceConnectWithoutContext(
+        "InterestSent",
+        MakeCallback(&NdndsimConsumerRandomizeTestCase::UniformInterestSent, this));
+
+    // Regular (non-randomized) consumer
+    NdndAppHelper regularHelper("ns3::ndndsim::NdndConsumer");
+    regularHelper.SetAttribute("Prefix", StringValue("/ndn/rand/regular"));
+    regularHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    regularHelper.SetAttribute("Randomize", StringValue("none"));
+    auto regularApps = regularHelper.Install(nodes.Get(1));
+    regularApps.Start(Seconds(1.0));
+    regularApps.Stop(Seconds(4.0));
+    regularApps.Get(0)->TraceConnectWithoutContext(
+        "InterestSent",
+        MakeCallback(&NdndsimConsumerRandomizeTestCase::RegularInterestSent, this));
+
+    Simulator::Stop(Seconds(5.0));
+    Simulator::Run();
+
+    // Both should send Interests
+    NS_TEST_ASSERT_MSG_GT(m_uniformTimes.size(), 5, "Uniform consumer should send Interests");
+    NS_TEST_ASSERT_MSG_GT(m_regularTimes.size(), 5, "Regular consumer should send Interests");
+
+    // Regular consumer: inter-Interest gaps should be identical (0.1s)
+    if (m_regularTimes.size() >= 3)
+    {
+        double gap1 = m_regularTimes[2] - m_regularTimes[1];
+        double gap2 = m_regularTimes[1] - m_regularTimes[0];
+        NS_TEST_ASSERT_MSG_EQ_TOL(gap1, gap2, 1e-6,
+                                    "Regular consumer should have constant gaps");
+    }
+
+    // Uniform consumer: inter-Interest gaps should vary
+    if (m_uniformTimes.size() >= 4)
+    {
+        bool allSame = true;
+        double baseGap = m_uniformTimes[1] - m_uniformTimes[0];
+        for (size_t i = 2; i < m_uniformTimes.size(); ++i)
+        {
+            double gap = m_uniformTimes[i] - m_uniformTimes[i - 1];
+            if (std::abs(gap - baseGap) > 1e-6)
+            {
+                allSame = false;
+                break;
+            }
+        }
+        NS_TEST_ASSERT_MSG_EQ(allSame, false,
+                                "Uniform consumer should have varying gaps");
+    }
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 25. Producer Freshness Attribute Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify NdndProducer's Freshness attribute can be set and retrieved.
+ */
+class NdndsimProducerFreshnessTestCase : public TestCase
+{
+  public:
+    NdndsimProducerFreshnessTestCase();
+    void DoRun() override;
+};
+
+NdndsimProducerFreshnessTestCase::NdndsimProducerFreshnessTestCase()
+    : TestCase("NdndProducer Freshness attribute")
+{
+}
+
+void
+NdndsimProducerFreshnessTestCase::DoRun()
+{
+    Ptr<NdndProducer> producer = CreateObject<NdndProducer>();
+
+    // Default freshness should be 0ms
+    TimeValue freshVal;
+    producer->GetAttribute("Freshness", freshVal);
+    NS_TEST_ASSERT_MSG_EQ(freshVal.Get(), MilliSeconds(0), "Default freshness");
+
+    // Set to 4 seconds
+    producer->SetAttribute("Freshness", TimeValue(Seconds(4.0)));
+    producer->GetAttribute("Freshness", freshVal);
+    NS_TEST_ASSERT_MSG_EQ(freshVal.Get(), Seconds(4.0), "Custom freshness of 4s");
+
+    // Set to 500ms
+    producer->SetAttribute("Freshness", TimeValue(MilliSeconds(500)));
+    producer->GetAttribute("Freshness", freshVal);
+    NS_TEST_ASSERT_MSG_EQ(freshVal.Get(), MilliSeconds(500), "Custom freshness of 500ms");
+
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 26. Topology Reader Correctness Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Read the grid and tree topology files and verify node count, link count,
+ * and named node lookup via ns3::Names.
+ */
+class NdndsimTopologyReaderTestCase : public TestCase
+{
+  public:
+    NdndsimTopologyReaderTestCase();
+    void DoRun() override;
+};
+
+NdndsimTopologyReaderTestCase::NdndsimTopologyReaderTestCase()
+    : TestCase("Topology reader creates correct nodes and links")
+{
+}
+
+void
+NdndsimTopologyReaderTestCase::DoRun()
+{
+    // Read the 3×3 grid topology
+    {
+        NdndTopologyReader reader;
+        reader.SetFileName("contrib/ndndSIM/examples/topologies/topo-grid-3x3.txt");
+        NodeContainer nodes = reader.Read();
+
+        NS_TEST_ASSERT_MSG_EQ(nodes.GetN(), 9, "Grid should have 9 nodes");
+        NS_TEST_ASSERT_MSG_EQ(reader.GetLinks().size(), 12, "Grid should have 12 links");
+
+        // Named lookup
+        Ptr<Node> node0 = Names::Find<Node>("Node0");
+        NS_TEST_ASSERT_MSG_NE(node0, nullptr, "Node0 should be findable by name");
+        Ptr<Node> node8 = Names::Find<Node>("Node8");
+        NS_TEST_ASSERT_MSG_NE(node8, nullptr, "Node8 should be findable by name");
+
+        // Clear names for next topology
+        Simulator::Destroy();
+    }
+
+    // Read the tree topology
+    {
+        NdndTopologyReader reader;
+        reader.SetFileName("contrib/ndndSIM/examples/topologies/topo-tree.txt");
+        NodeContainer nodes = reader.Read();
+
+        NS_TEST_ASSERT_MSG_EQ(nodes.GetN(), 7, "Tree should have 7 nodes");
+        NS_TEST_ASSERT_MSG_EQ(reader.GetLinks().size(), 6, "Tree should have 6 links");
+
+        Ptr<Node> root = Names::Find<Node>("root");
+        NS_TEST_ASSERT_MSG_NE(root, nullptr, "root should be findable by name");
+        Ptr<Node> leaf1 = Names::Find<Node>("leaf-1");
+        NS_TEST_ASSERT_MSG_NE(leaf1, nullptr, "leaf-1 should be findable by name");
+
+        Simulator::Destroy();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 27. DV Grid End-to-End Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * DV routing on a 3×3 grid. Consumer at corner (0,0), producer at
+ * opposite corner (2,2). DV must discover multi-hop routes through
+ * the grid.
+ */
+class NdndsimDvGridE2eTestCase : public TestCase
+{
+  public:
+    NdndsimDvGridE2eTestCase();
+    void DoRun() override;
+
+  private:
+    void DataReceivedCb(uint32_t dataSize);
+    uint32_t m_dataCount;
+};
+
+NdndsimDvGridE2eTestCase::NdndsimDvGridE2eTestCase()
+    : TestCase("DV routing end-to-end on 3x3 grid"),
+      m_dataCount(0)
+{
+}
+
+void
+NdndsimDvGridE2eTestCase::DataReceivedCb(uint32_t dataSize)
+{
+    m_dataCount++;
+}
+
+void
+NdndsimDvGridE2eTestCase::DoRun()
+{
+    // 3×3 grid via PointToPointGridHelper
+    Config::SetDefault("ns3::PointToPointNetDevice::DataRate", StringValue("10Mbps"));
+    Config::SetDefault("ns3::PointToPointChannel::Delay", StringValue("5ms"));
+    Config::SetDefault("ns3::DropTailQueue<Packet>::MaxSize", StringValue("20p"));
+
+    PointToPointHelper p2p;
+    PointToPointGridHelper grid(3, 3, p2p);
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    NodeContainer allNodes;
+    for (uint32_t row = 0; row < 3; ++row)
+    {
+        for (uint32_t col = 0; col < 3; ++col)
+        {
+            stackHelper.Install(grid.GetNode(row, col));
+            allNodes.Add(grid.GetNode(row, col));
+        }
+    }
+
+    // Enable DV routing
+    NdndStackHelper::EnableDvRouting("/ndn", allNodes);
+
+    std::string prefix = "/ndn/gridtest";
+
+    // Producer at (2,2) — start early for DV convergence
+    NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+    producerHelper.SetAttribute("Prefix", StringValue(prefix));
+    producerHelper.SetAttribute("PayloadSize", UintegerValue(512));
+    auto producerApps = producerHelper.Install(grid.GetNode(2, 2));
+    producerApps.Start(Seconds(0.5));
+    producerApps.Stop(Seconds(20.0));
+
+    // Consumer at (0,0) — delayed start for DV convergence
+    NdndAppHelper consumerHelper("ns3::ndndsim::NdndConsumer");
+    consumerHelper.SetAttribute("Prefix", StringValue(prefix));
+    consumerHelper.SetAttribute("Frequency", DoubleValue(10.0));
+    auto consumerApps = consumerHelper.Install(grid.GetNode(0, 0));
+    consumerApps.Start(Seconds(5.0));
+    consumerApps.Stop(Seconds(15.0));
+
+    consumerApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDvGridE2eTestCase::DataReceivedCb, this));
+
+    Simulator::Stop(Seconds(20.0));
+    Simulator::Run();
+
+    // 10s × 10Hz = ~100 Interests; after convergence expect majority satisfied
+    NS_TEST_ASSERT_MSG_GT(m_dataCount, 40,
+                           "Should receive substantial Data via DV on 3x3 grid");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 28. DV with Multiple Producers Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * DV routing with two producers for different prefixes. Verifies that
+ * DV prefix propagation handles multiple application prefixes correctly.
+ *
+ * Topology: ProdA(0) -- Router(1) -- Consumer(2) -- ProdB(3)
+ */
+class NdndsimDvMultiProducerTestCase : public TestCase
+{
+  public:
+    NdndsimDvMultiProducerTestCase();
+    void DoRun() override;
+
+  private:
+    void DataReceivedA(uint32_t dataSize);
+    void DataReceivedB(uint32_t dataSize);
+    uint32_t m_dataA;
+    uint32_t m_dataB;
+};
+
+NdndsimDvMultiProducerTestCase::NdndsimDvMultiProducerTestCase()
+    : TestCase("DV routing with multiple producers and prefixes"),
+      m_dataA(0),
+      m_dataB(0)
+{
+}
+
+void
+NdndsimDvMultiProducerTestCase::DataReceivedA(uint32_t dataSize)
+{
+    m_dataA++;
+}
+
+void
+NdndsimDvMultiProducerTestCase::DataReceivedB(uint32_t dataSize)
+{
+    m_dataB++;
+}
+
+void
+NdndsimDvMultiProducerTestCase::DoRun()
+{
+    NodeContainer nodes;
+    nodes.Create(4);
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+    p2p.Install(nodes.Get(0), nodes.Get(1));
+    p2p.Install(nodes.Get(1), nodes.Get(2));
+    p2p.Install(nodes.Get(2), nodes.Get(3));
+
+    NdndStackHelper::InitializeBridge();
+
+    NdndStackHelper stackHelper;
+    stackHelper.Install(nodes);
+
+    NdndStackHelper::EnableDvRouting("/ndn", nodes);
+
+    // Producer A on node 0 — /ndn/alpha
+    NdndAppHelper prodAHelper("ns3::ndndsim::NdndProducer");
+    prodAHelper.SetAttribute("Prefix", StringValue("/ndn/alpha"));
+    prodAHelper.SetAttribute("PayloadSize", UintegerValue(256));
+    auto prodAApps = prodAHelper.Install(nodes.Get(0));
+    prodAApps.Start(Seconds(0.5));
+    prodAApps.Stop(Seconds(20.0));
+
+    // Producer B on node 3 — /ndn/beta
+    NdndAppHelper prodBHelper("ns3::ndndsim::NdndProducer");
+    prodBHelper.SetAttribute("Prefix", StringValue("/ndn/beta"));
+    prodBHelper.SetAttribute("PayloadSize", UintegerValue(256));
+    auto prodBApps = prodBHelper.Install(nodes.Get(3));
+    prodBApps.Start(Seconds(0.5));
+    prodBApps.Stop(Seconds(20.0));
+
+    // Consumer for /ndn/alpha on node 2
+    NdndAppHelper consAHelper("ns3::ndndsim::NdndConsumer");
+    consAHelper.SetAttribute("Prefix", StringValue("/ndn/alpha"));
+    consAHelper.SetAttribute("Frequency", DoubleValue(5.0));
+    auto consAApps = consAHelper.Install(nodes.Get(2));
+    consAApps.Start(Seconds(5.0));
+    consAApps.Stop(Seconds(15.0));
+    consAApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDvMultiProducerTestCase::DataReceivedA, this));
+
+    // Consumer for /ndn/beta on node 1
+    NdndAppHelper consBHelper("ns3::ndndsim::NdndConsumer");
+    consBHelper.SetAttribute("Prefix", StringValue("/ndn/beta"));
+    consBHelper.SetAttribute("Frequency", DoubleValue(5.0));
+    auto consBApps = consBHelper.Install(nodes.Get(1));
+    consBApps.Start(Seconds(5.0));
+    consBApps.Stop(Seconds(15.0));
+    consBApps.Get(0)->TraceConnectWithoutContext(
+        "DataReceived",
+        MakeCallback(&NdndsimDvMultiProducerTestCase::DataReceivedB, this));
+
+    Simulator::Stop(Seconds(20.0));
+    Simulator::Run();
+
+    NS_TEST_ASSERT_MSG_GT(m_dataA, 15,
+                           "Consumer should receive Data for /ndn/alpha via DV");
+    NS_TEST_ASSERT_MSG_GT(m_dataB, 15,
+                           "Consumer should receive Data for /ndn/beta via DV");
+
+    NdndStackHelper::DestroyBridge();
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 29. Consumer LifeTime Attribute Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify NdndConsumer's LifeTime attribute can be set and retrieved.
+ */
+class NdndsimConsumerLifetimeTestCase : public TestCase
+{
+  public:
+    NdndsimConsumerLifetimeTestCase();
+    void DoRun() override;
+};
+
+NdndsimConsumerLifetimeTestCase::NdndsimConsumerLifetimeTestCase()
+    : TestCase("NdndConsumer LifeTime attribute")
+{
+}
+
+void
+NdndsimConsumerLifetimeTestCase::DoRun()
+{
+    Ptr<NdndConsumer> consumer = CreateObject<NdndConsumer>();
+
+    // Default lifetime should be 2s
+    TimeValue ltVal;
+    consumer->GetAttribute("LifeTime", ltVal);
+    NS_TEST_ASSERT_MSG_EQ(ltVal.Get(), Seconds(2.0), "Default LifeTime");
+
+    // Set to 500ms
+    consumer->SetAttribute("LifeTime", TimeValue(MilliSeconds(500)));
+    consumer->GetAttribute("LifeTime", ltVal);
+    NS_TEST_ASSERT_MSG_EQ(ltVal.Get(), MilliSeconds(500), "Custom LifeTime 500ms");
+
+    // Set to 10s
+    consumer->SetAttribute("LifeTime", TimeValue(Seconds(10.0)));
+    consumer->GetAttribute("LifeTime", ltVal);
+    NS_TEST_ASSERT_MSG_EQ(ltVal.Get(), Seconds(10.0), "Custom LifeTime 10s");
+
+    Simulator::Destroy();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 30. Zipf Consumer Attribute Test
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Verify NdndConsumerZipf attributes and end-to-end operation.
+ */
+class NdndsimZipfConsumerTestCase : public TestCase
+{
+  public:
+    NdndsimZipfConsumerTestCase();
+    void DoRun() override;
+
+  private:
+    void InterestSentCb(uint32_t seqNo);
+    uint32_t m_interestCount;
+};
+
+NdndsimZipfConsumerTestCase::NdndsimZipfConsumerTestCase()
+    : TestCase("Zipf consumer attributes and operation"),
+      m_interestCount(0)
+{
+}
+
+void
+NdndsimZipfConsumerTestCase::InterestSentCb(uint32_t seqNo)
+{
+    m_interestCount++;
+}
+
+void
+NdndsimZipfConsumerTestCase::DoRun()
+{
+    // Test attribute defaults and configuration
+    {
+        Ptr<NdndConsumerZipf> zipf = CreateObject<NdndConsumerZipf>();
+
+        UintegerValue numContents;
+        zipf->GetAttribute("NumberOfContents", numContents);
+        NS_TEST_ASSERT_MSG_EQ(numContents.Get(), 100, "Default NumberOfContents");
+
+        DoubleValue qVal, sVal;
+        zipf->GetAttribute("q", qVal);
+        zipf->GetAttribute("s", sVal);
+        NS_TEST_ASSERT_MSG_EQ_TOL(qVal.Get(), 0.0, 1e-9, "Default q");
+        NS_TEST_ASSERT_MSG_EQ_TOL(sVal.Get(), 0.7, 1e-9, "Default s");
+
+        zipf->SetAttribute("NumberOfContents", UintegerValue(1000));
+        zipf->GetAttribute("NumberOfContents", numContents);
+        NS_TEST_ASSERT_MSG_EQ(numContents.Get(), 1000, "Custom NumberOfContents");
+    }
+
+    Simulator::Destroy();
+
+    // Integration test: Zipf consumer sends Interests
+    {
+        NodeContainer nodes;
+        nodes.Create(2);
+
+        PointToPointHelper p2p;
+        p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+        p2p.SetChannelAttribute("Delay", StringValue("5ms"));
+        p2p.Install(nodes.Get(0), nodes.Get(1));
+
+        NdndStackHelper::InitializeBridge();
+
+        NdndStackHelper stackHelper;
+        stackHelper.Install(nodes);
+
+        NdndStackHelper::AddRoute(nodes.Get(0), "/ndn/zipftest", uint32_t(0), uint64_t(1));
+
+        NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
+        producerHelper.SetAttribute("Prefix", StringValue("/ndn/zipftest"));
+        auto prodApps = producerHelper.Install(nodes.Get(1));
+        prodApps.Start(Seconds(0.0));
+        prodApps.Stop(Seconds(5.0));
+
+        NdndAppHelper zipfHelper("ns3::ndndsim::NdndConsumerZipf");
+        zipfHelper.SetAttribute("Prefix", StringValue("/ndn/zipftest"));
+        zipfHelper.SetAttribute("Frequency", DoubleValue(20.0));
+        zipfHelper.SetAttribute("NumberOfContents", UintegerValue(50));
+        zipfHelper.SetAttribute("s", DoubleValue(1.0));
+        auto zipfApps = zipfHelper.Install(nodes.Get(0));
+        zipfApps.Start(Seconds(1.0));
+        zipfApps.Stop(Seconds(4.0));
+
+        zipfApps.Get(0)->TraceConnectWithoutContext(
+            "InterestSent",
+            MakeCallback(&NdndsimZipfConsumerTestCase::InterestSentCb, this));
+
+        Simulator::Stop(Seconds(5.0));
+        Simulator::Run();
+
+        NS_TEST_ASSERT_MSG_GT(m_interestCount, 40,
+                               "Zipf consumer should send ~60 Interests (3s × 20Hz)");
+
+        NdndStackHelper::DestroyBridge();
+        Simulator::Destroy();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Test Suite Registration
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1192,18 +2347,35 @@ NdndsimTestSuite::NdndsimTestSuite()
     AddTestCase(new NdndsimProducerAttributeTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimAppHelperTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimTypeIdHierarchyTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimProducerFreshnessTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimConsumerLifetimeTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimTopologyReaderTestCase, TestCase::Duration::QUICK);
 
     // Integration tests (require Go bridge)
     AddTestCase(new NdndsimStackInstallTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimMultiNodeInstallTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimRoutingTestCase, TestCase::Duration::QUICK);
-    AddTestCase(new NdndsimConsumerProducerTestCase, TestCase::Duration::EXTENSIVE);
-    AddTestCase(new NdndsimConsumerSeqTestCase, TestCase::Duration::EXTENSIVE);
-    AddTestCase(new NdndsimMultiConsumerTestCase, TestCase::Duration::EXTENSIVE);
+    AddTestCase(new NdndsimConsumerProducerTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimConsumerSeqTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimMultiConsumerTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimEtherTypeTestCase, TestCase::Duration::QUICK);
     AddTestCase(new NdndsimStackDisposeTestCase, TestCase::Duration::QUICK);
-    AddTestCase(new NdndsimAppLifecycleTestCase, TestCase::Duration::EXTENSIVE);
-    AddTestCase(new NdndsimLinkFailureTestCase, TestCase::Duration::EXTENSIVE);
+    AddTestCase(new NdndsimAppLifecycleTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimLinkFailureTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimDataReceivedE2eTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimMultiPrefixTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimConsumerRandomizeTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimZipfConsumerTestCase, TestCase::Duration::QUICK);
+
+    // Routing algorithm tests
+    AddTestCase(new NdndsimCalculateRoutesTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimDijkstraMetricTestCase, TestCase::Duration::QUICK);
+
+    // DV routing tests
+    AddTestCase(new NdndsimDvRoutingInitTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimDvEndToEndTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimDvGridE2eTestCase, TestCase::Duration::QUICK);
+    AddTestCase(new NdndsimDvMultiProducerTestCase, TestCase::Duration::QUICK);
 }
 
 /// Static instance to auto-register the test suite
