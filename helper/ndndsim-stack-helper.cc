@@ -285,7 +285,8 @@ NdndStackHelper::CalculateRoutes(const std::string& prefix,
 }
 
 void
-NdndStackHelper::EnableDvRouting(const std::string& network, NodeContainer nodes)
+NdndStackHelper::EnableDvRouting(const std::string& network, NodeContainer nodes,
+                                  const std::string& dvConfigJSON)
 {
     NS_LOG_FUNCTION(network);
 
@@ -308,7 +309,9 @@ NdndStackHelper::EnableDvRouting(const std::string& network, NodeContainer nodes
                                  const_cast<char*>(network.c_str()),
                                  static_cast<int>(network.size()),
                                  const_cast<char*>(routerName.c_str()),
-                                 static_cast<int>(routerName.size()));
+                                 static_cast<int>(routerName.size()),
+                                 const_cast<char*>(dvConfigJSON.c_str()),
+                                 static_cast<int>(dvConfigJSON.size()));
         if (rc != 0)
         {
             NS_LOG_ERROR("Failed to start DV routing on node " << nodeId);

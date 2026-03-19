@@ -110,8 +110,10 @@ class NdndStackHelper
      *
      * \param network the NDN network prefix (e.g., "/ndn")
      * \param nodes container of nodes to enable DV on
+     * \param dvConfigJSON JSON config overlay for DV (empty = defaults)
      */
-    static void EnableDvRouting(const std::string& network, NodeContainer nodes);
+    static void EnableDvRouting(const std::string& network, NodeContainer nodes,
+                                 const std::string& dvConfigJSON = "");
 };
 
 } // namespace ndndsim

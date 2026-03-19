@@ -111,12 +111,15 @@ extern "C"
                                             char* prefixStr,
                                             int prefixLen);
 
-    /** Start DV routing on a node. Returns 0 on success. */
+    /** Start DV routing on a node. Returns 0 on success.
+     *  cfgStr/cfgLen: JSON config overlay (empty = use defaults). */
     extern int NdndSimStartDv(uint32_t nodeId,
                                char* networkStr,
                                int networkLen,
                                char* routerStr,
-                               int routerLen);
+                               int routerLen,
+                               char* cfgStr,
+                               int cfgLen);
 
     /** Stop DV routing on a node. */
     extern void NdndSimStopDv(uint32_t nodeId);

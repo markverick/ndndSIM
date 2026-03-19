@@ -111,3 +111,17 @@ build_lib_example(
         ${libwifi}
         ${libmobility}
 )
+
+
+
+# Atlas general-purpose scenario
+build_lib_example(
+    NAME ndndsim-atlas-scenario
+    SOURCE_FILES ndndsim-atlas-scenario.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)
