@@ -121,6 +121,10 @@ extern "C"
     /** Stop DV routing on a node. */
     extern void NdndSimStopDv(uint32_t nodeId);
 
+    /** Get the number of RIB entries on a node (for convergence detection).
+     *  If prefixStr is non-NULL, counts only entries whose name starts with prefix. */
+    extern int NdndSimGetRibEntryCount(uint32_t nodeId, char* prefixStr, int prefixLen);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 

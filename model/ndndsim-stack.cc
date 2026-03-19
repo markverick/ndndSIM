@@ -189,5 +189,22 @@ NdndStack::GetFaceId(uint32_t ifIndex) const
     return 0;
 }
 
+int
+NdndStack::GetRibEntryCount(const std::string& prefix) const
+{
+    if (!m_installed || !m_node)
+    {
+        return 0;
+    }
+    if (prefix.empty())
+    {
+        return NdndSimGetRibEntryCount(m_node->GetId(), nullptr, 0);
+    }
+    std::string p = prefix;
+    return NdndSimGetRibEntryCount(m_node->GetId(),
+                                   const_cast<char*>(p.c_str()),
+                                   static_cast<int>(p.size()));
+}
+
 } // namespace ndndsim
 } // namespace ns3

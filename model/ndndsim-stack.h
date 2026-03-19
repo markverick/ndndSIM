@@ -74,6 +74,14 @@ class NdndStack : public Object
      */
     uint64_t GetFaceId(uint32_t ifIndex) const;
 
+    /**
+     * Get the number of RIB entries on this node.
+     * If prefix is non-empty, counts only entries whose name starts with prefix.
+     * Useful for convergence detection: after DV converges in an N-node
+     * network, each node should have at least N entries under the network prefix.
+     */
+    int GetRibEntryCount(const std::string& prefix = "") const;
+
   protected:
     void DoDispose() override;
     void NotifyNewAggregate() override;
