@@ -421,6 +421,7 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-topo-reader` | Read topology from file (supports `--topo`, `--consumer`, `--producer` CLI args) |
 | `ndndsim-tree-tracers` | Tree topology from file + CSV rate tracing |
 | `ndndsim-sprint-churn` | Sprint PoP topology with random link flaps, prefix add/remove, DV routing, and classified link traffic measurement |
+| `ndndsim-atlas-scenario` | Fully parameterised grid scenario for DV convergence and traffic measurement (used by [atlas-scenarios](https://github.com/markverick/atlas-scenarios)) |
 
 ### Topology Files
 
@@ -469,10 +470,33 @@ class NdndPing : public ndndsim::NdndApp
 5. **Send packets** — encode an NDN Interest/Data as a TLV byte buffer and call
    `NdndSimReceivePacket()` via the Go bridge to inject it into the forwarder.
 
+## Security & Trust
+
+When DV routing is enabled, ndndSIM uses the same Ed25519 trust pipeline as
+the real NDNd forwarder. This ensures that simulated DV advertisement and
+prefix-sync packets are signed and validated with the same overhead as in
+emulation or deployment.
+
+**How it works:**
+
+1. A shared Ed25519 **root key** is generated once per simulation run
+   (identity: `/<network>/KEY/<random>`, self-signed, 10-year validity).
+2. Each node receives its own Ed25519 **node key** (identity:
+   `/<network>/<routerName>/32=DV`), with a certificate signed by the root.
+3. All nodes load the root certificate as a trust anchor plus their own
+   keychain (private key + certificate).
+4. DV advertisements and prefix-sync messages are signed with the node key
+   and validated against the trust schema (`#network_cert → #router_cert`).
+
+This is handled automatically by `EnableDvRouting()` — no extra configuration
+is needed. The signing overhead (~74 bytes for Ed25519 vs SHA-256 digest)
+matches what the real forwarder produces, so traffic measurements are
+faithful to real deployments.
+
 ## Running Tests
 
 ```bash
-# Run the full ndndSIM test suite (30 tests)
+# Run the full ndndSIM test suite (33 tests)
 ./ns3 run test-runner -- --suite=ndndsim --verbose
 
 # With extensive (integration) tests
@@ -482,9 +506,9 @@ class NdndPing : public ndndsim::NdndApp
 Tests cover TypeId registration, object lifecycle, attribute configuration
 (Consumer LifeTime/Randomize, Producer Freshness, Zipf parameters),
 stack installation, static routing, Dijkstra shortest-path routing,
-DV routing (init, end-to-end, grid, multi-producer), end-to-end trace
-verification (InterestSent + DataReceived + DataSent), multi-prefix
-topologies, topology reader correctness, sequence ordering,
+DV routing (init, end-to-end, grid, multi-producer, Ed25519 trust),
+end-to-end trace verification (InterestSent + DataReceived + DataSent),
+multi-prefix topologies, topology reader correctness, sequence ordering,
 multi-consumer scenarios, EtherType filtering, cleanup, app lifecycle
 timing, and link failure/recovery.
 
@@ -523,12 +547,17 @@ contrib/ndndSIM/
 │   ├── ndndsim-topo-reader.cc    # Topology file reader
 │   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
 │   ├── ndndsim-sprint-churn.cc   # Sprint PoP topology + link/prefix churn
+│   ├── ndndsim-atlas-scenario.cc # Parameterised grid scenario (atlas)
 │   ├── plot-ndndsim-traffic.py   # Traffic composition plotter
 │   └── topologies/               # Topology definition files
 ├── test/
-│   └── ndndsim-test-suite.cc     # 30 unit/integration tests
+│   └── ndndsim-test-suite.cc     # 33 unit/integration tests
 └── ndnd/                         # NDNd Go forwarder (submodule)
     └── sim/                      # Go simulation bridge package
+        ├── engine.go             #   SimEngine: synchronous packet dispatch
+        ├── forwarder.go          #   SimForwarder: fw.Thread lifecycle
+        ├── node.go               #   Per-node setup (faces, DV, trust)
+        └── trust.go              #   Ed25519 root + per-node keychain
 ```
 
 ## How It Works
@@ -565,6 +594,16 @@ contrib/ndndSIM/
      protocol with SVS-based state synchronization. Routes are discovered
      automatically—application prefixes are announced by producers and
      propagated through the network via DV advertisements.
+
+7. **Security**: When DV routing is used, the Go side generates an Ed25519
+   root key and per-node keychains (see [Security & Trust](#security--trust)).
+   The forwarding pipeline signs DV packets and validates incoming ones,
+   producing the same wire-level overhead as a real deployment.
+
+8. **NextHopFaceId**: Applications can specify a preferred next-hop face
+   (e.g. for certificate fetching). The engine wraps this as an NDNLPv2
+   `NextHopFaceId` field, and the forwarder extracts it for the forwarding
+   pipeline — matching the behaviour of the real NDNd forwarder.
 
 ## License
 
