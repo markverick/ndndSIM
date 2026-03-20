@@ -310,7 +310,9 @@ NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
 
     auto idx = static_cast<size_t>(cat);
     m_counters[idx].packets++;
-    m_counters[idx].bytes += sz;
+    // Count LP-encoded packet bytes (from the tag), excluding L2 headers.
+    // This matches emulation's UDP-payload accounting (UDP payload = LP pkt).
+    m_counters[idx].bytes += tag.GetPayloadSize();
 }
 
 void

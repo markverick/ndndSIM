@@ -35,7 +35,7 @@ static std::unordered_map<uint64_t, EventId> g_eventMap;
  * Apps register via RegisterDataProducedCallback / RegisterDataReceivedCallback.
  */
 static std::unordered_map<uint32_t, std::function<void(uint32_t)>> g_dataProducedCallbacks;
-static std::unordered_map<uint32_t, std::function<void(uint32_t, const std::string&)>> g_dataReceivedCallbacks;
+static std::unordered_map<uint32_t, std::vector<std::function<void(uint32_t, const std::string&)>>> g_dataReceivedCallbacks;
 
 /**
  * Callback: NDNd wants to send a packet on an ns-3 NetDevice.
@@ -153,7 +153,10 @@ OnDataReceived(uint32_t nodeId, uint32_t dataSize, const char* dataName, uint32_
     if (it != g_dataReceivedCallbacks.end())
     {
         std::string name(dataName, nameLen);
-        it->second(dataSize, name);
+        for (auto& cb : it->second)
+        {
+            cb(dataSize, name);
+        }
     }
 }
 
@@ -191,7 +194,7 @@ void
 RegisterDataReceivedCallback(uint32_t nodeId,
                               std::function<void(uint32_t, const std::string&)> cb)
 {
-    g_dataReceivedCallbacks[nodeId] = std::move(cb);
+    g_dataReceivedCallbacks[nodeId].push_back(std::move(cb));
 }
 
 } // namespace ndndsim

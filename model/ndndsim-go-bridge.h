@@ -111,6 +111,19 @@ extern "C"
                                             char* prefixStr,
                                             int prefixLen);
 
+    /** Register a Go-side consumer on a node that sends Interests for <prefix>/<seqno>.
+     *  frequencyHz: sending rate (e.g. 10.0 for 10 Hz)
+     *  lifetimeMs: Interest lifetime in milliseconds
+     *  Returns 0 on success, -1 on error. */
+    extern int NdndSimRegisterConsumer(uint32_t nodeId,
+                                        char* prefixStr,
+                                        int prefixLen,
+                                        double frequencyHz,
+                                        uint32_t lifetimeMs);
+
+    /** Stop a Go-side consumer on a node, preventing further Interest sends. */
+    extern void NdndSimStopConsumer(uint32_t nodeId);
+
     /** Start DV routing on a node. Returns 0 on success.
      *  cfgStr/cfgLen: JSON config overlay (empty = use defaults). */
     extern int NdndSimStartDv(uint32_t nodeId,
