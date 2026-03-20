@@ -189,7 +189,6 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
     //   /localhost/nlsr/...               → Mgmt
     //   else                              → UserInterest or UserData
 
-    bool firstIsLocalhop = false;
     bool firstIsLocalhost = false;
     bool seenDvKeyword = false;
     bool seenPfsKeyword = false;
@@ -208,9 +207,7 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
 
         if (compIdx == 0 && cType == kTlvGenericComponent)
         {
-            if (ComponentEquals(cVal, cLen, "localhop"))
-                firstIsLocalhop = true;
-            else if (ComponentEquals(cVal, cLen, "localhost"))
+            if (ComponentEquals(cVal, cLen, "localhost"))
                 firstIsLocalhost = true;
         }
         else if (compIdx == 1 && firstIsLocalhost && cType == kTlvGenericComponent)

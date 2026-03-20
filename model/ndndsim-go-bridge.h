@@ -141,6 +141,11 @@ extern "C"
      *  If prefixStr is non-NULL, counts only entries whose name starts with prefix. */
     extern int NdndSimGetRibEntryCount(uint32_t nodeId, char* prefixStr, int prefixLen);
 
+    /** Get DV convergence for a prefix as
+     *  (last AddRemotePrefix receive time - first GlobalAnnounce origin time),
+     *  in nanoseconds of simulation time. Returns -1 if unavailable. */
+    extern int64_t NdndSimGetDvUpdateSpanNs(char* prefixStr, int prefixLen);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 

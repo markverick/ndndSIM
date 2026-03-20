@@ -105,10 +105,10 @@ NdndConsumer::OnStart()
         m_frequency,
         lifetimeMs);
 
-    if (ret != 0)
-    {
-        NS_LOG_WARN("NdndSimRegisterConsumer failed on node " << GetNode()->GetId());
-    }
+    NS_ABORT_MSG_IF(ret != 0,
+                    "NdndSimRegisterConsumer failed on node " << GetNode()->GetId()
+                    << " (prefix=" << m_prefix << ")"
+                    << " — NDNd stack must be initialized before consumer app starts");
 }
 
 void

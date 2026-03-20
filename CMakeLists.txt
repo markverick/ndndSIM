@@ -86,6 +86,14 @@ set(NDND_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ndnd)
 set(NDND_GO_ARCHIVE ${CMAKE_CURRENT_BINARY_DIR}/libndndsim_go.a)
 set(NDND_GO_HEADER  ${CMAKE_CURRENT_BINARY_DIR}/libndndsim_go.h)
 
+# Collect all Go source files so cmake rebuilds the archive when any of them change.
+# GLOB_RECURSE is evaluated at configure time; re-run cmake after adding new .go files.
+file(GLOB_RECURSE NDND_GO_SOURCES
+    "${NDND_SRC_DIR}/*.go"
+)
+# Exclude test files — they are not part of the production binary.
+list(FILTER NDND_GO_SOURCES EXCLUDE REGEX ".*_test\\.go$")
+
 # Custom command to build the Go simulation library as a C archive.
 # This produces libndndsim_go.a and libndndsim_go.h.
 add_custom_command(
@@ -102,18 +110,8 @@ add_custom_command(
     WORKING_DIRECTORY ${NDND_SRC_DIR}
     COMMENT "Building NDNd Go simulation library"
     DEPENDS
-        ${NDND_SRC_DIR}/sim/clock.go
-        ${NDND_SRC_DIR}/sim/timer.go
-        ${NDND_SRC_DIR}/sim/face.go
-        ${NDND_SRC_DIR}/sim/fw_face.go
-        ${NDND_SRC_DIR}/sim/forwarder.go
-        ${NDND_SRC_DIR}/sim/node.go
-        ${NDND_SRC_DIR}/sim/runtime.go
-        ${NDND_SRC_DIR}/sim/cgo_export.go
-        ${NDND_SRC_DIR}/sim/dv.go
+        ${NDND_GO_SOURCES}
         ${NDND_SRC_DIR}/sim/ndndsim_sim.h
-        ${NDND_SRC_DIR}/sim/util.go
-        ${NDND_SRC_DIR}/sim/cmd/main.go
     VERBATIM
 )
 

@@ -4,9 +4,9 @@
  * Reads a topology file, installs NDNd with DV routing, places a
  * consumer and producer, and writes a rate trace CSV.
  *
- * Convergence detection: periodically polls each node's RIB entry count.
- * When every node has >= numNodes entries, DV has converged.  The
- * convergence time is written to a one-line file (--convTrace).
+ * Convergence detection: direct DV event-span measurement in simulated time.
+ * We export (last Add remote prefix receive time - first Global announce
+ * origin time) for the configured app prefix into --convTrace.
  *
  * All parameters are configurable via command line — no need to
  * regenerate C++ source for different topologies or settings.
@@ -28,48 +28,12 @@
 #include "ns3/ndndsim-stack-helper.h"
 #include "ns3/ndndsim-stack.h"
 #include "ns3/ndndsim-topology-reader.h"
+#include "ns3/ndndsim-go-bridge.h"
 
 #include <fstream>
 
 using namespace ns3;
 using namespace ns3::ndndsim;
-
-// ─── Convergence checker ───────────────────────────────────────────
-
-static bool g_converged = false;
-static double g_convTime = -1.0;
-
-static void
-CheckConvergence(NodeContainer nodes, uint32_t numNodes, double dvStartTime,
-                 double interval, std::string network)
-{
-    if (g_converged)
-    {
-        return;
-    }
-
-    bool allDone = true;
-    for (uint32_t i = 0; i < nodes.GetN(); ++i)
-    {
-        Ptr<NdndStack> stack = nodes.Get(i)->GetObject<NdndStack>();
-        if (!stack || static_cast<uint32_t>(stack->GetRibEntryCount(network)) < numNodes)
-        {
-            allDone = false;
-            break;
-        }
-    }
-
-    if (allDone)
-    {
-        g_converged = true;
-        g_convTime = Simulator::Now().GetSeconds() - dvStartTime;
-    }
-    else
-    {
-        Simulator::Schedule(Seconds(interval),
-                            &CheckConvergence, nodes, numNodes, dvStartTime, interval, network);
-    }
-}
 
 int
 main(int argc, char* argv[])
@@ -143,16 +107,6 @@ main(int argc, char* argv[])
     stackHelper.Install(nodes);
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
 
-    // ─── Convergence Detection ─────────────────────────────────────
-
-    // DV starts immediately at t=0 when EnableDvRouting is called.
-    // Schedule periodic checks starting at t=traceInterval.
-    double dvStartTime = 0.0;
-    std::string dvNetwork = network;
-    Simulator::Schedule(Seconds(traceInterval),
-                        &CheckConvergence, nodes, nodes.GetN(), dvStartTime, traceInterval,
-                        dvNetwork);
-
     // ─── Applications ──────────────────────────────────────────────
 
     NdndAppHelper producerHelper("ns3::ndndsim::NdndProducer");
@@ -194,9 +148,12 @@ main(int argc, char* argv[])
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
-        if (g_converged)
+        auto pfx = prefix;
+        int64_t spanNs = NdndSimGetDvUpdateSpanNs(const_cast<char*>(pfx.c_str()),
+                                                  static_cast<int>(pfx.size()));
+        if (spanNs >= 0)
         {
-            ofs << g_convTime << std::endl;
+            ofs << (static_cast<double>(spanNs) / 1e9) << std::endl;
         }
         else
         {
