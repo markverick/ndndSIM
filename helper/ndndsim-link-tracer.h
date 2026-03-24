@@ -81,7 +81,11 @@ static constexpr size_t kNumCategories = static_cast<size_t>(TrafficCategory::CO
 class NdndLinkTracer
 {
   public:
+    /// Create an interval-sampled tracer (original behaviour).
     static std::shared_ptr<NdndLinkTracer> Create(const std::string& file, Time period);
+
+    /// Create a per-packet event tracer that logs every packet with its timestamp.
+    static std::shared_ptr<NdndLinkTracer> CreatePerPacket(const std::string& file);
 
     ~NdndLinkTracer();
 
@@ -91,6 +95,7 @@ class NdndLinkTracer
 
   private:
     NdndLinkTracer(const std::string& file, Time period);
+    NdndLinkTracer(const std::string& file); // per-packet mode
 
     void MacTxCallback(Ptr<const Packet> packet);
     void WriteStats();
@@ -102,6 +107,7 @@ class NdndLinkTracer
     std::ofstream m_out;
     Time m_period;
     EventId m_event;
+    bool m_perPacket = false;
 
     struct Counters
     {

@@ -146,6 +146,13 @@ extern "C"
      *  in nanoseconds of simulation time. Returns -1 if unavailable. */
     extern int64_t NdndSimGetDvUpdateSpanNs(char* prefixStr, int prefixLen);
 
+    /** Get routing convergence time in nanoseconds of simulation time.
+     *  Convergence = time from first RouterReachable event to the event
+     *  that makes ALL nodes have routes to ALL other nodes.
+     *  totalNodes must match the number of DV-enabled nodes.
+     *  Returns -1 if not all nodes have converged. */
+    extern int64_t NdndSimGetRoutingConvergenceNs(int totalNodes);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 

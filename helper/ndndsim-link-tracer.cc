@@ -247,12 +247,22 @@ static const char* kCategoryNames[] = {
 NdndLinkTracer::NdndLinkTracer(const std::string& file, Time period)
     : m_out(file),
       m_period(period),
+      m_perPacket(false),
       m_counters{}
 {
     m_out << "Time";
     for (size_t i = 0; i < kNumCategories; ++i)
         m_out << "," << kCategoryNames[i] << "_Pkts," << kCategoryNames[i] << "_Bytes";
     m_out << "\n";
+}
+
+NdndLinkTracer::NdndLinkTracer(const std::string& file)
+    : m_out(file),
+      m_period(Seconds(0)),
+      m_perPacket(true),
+      m_counters{}
+{
+    m_out << "Time,Category,Bytes\n";
 }
 
 NdndLinkTracer::~NdndLinkTracer()
@@ -266,6 +276,12 @@ NdndLinkTracer::Create(const std::string& file, Time period)
     auto tracer = std::shared_ptr<NdndLinkTracer>(new NdndLinkTracer(file, period));
     tracer->ScheduleNext();
     return tracer;
+}
+
+std::shared_ptr<NdndLinkTracer>
+NdndLinkTracer::CreatePerPacket(const std::string& file)
+{
+    return std::shared_ptr<NdndLinkTracer>(new NdndLinkTracer(file));
 }
 
 void
@@ -305,11 +321,21 @@ NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
         cat = Classify(buf.data() + offset, sz - offset);
     }
 
+    uint32_t lpBytes = tag.GetPayloadSize();
+
+    if (m_perPacket)
+    {
+        m_out << Simulator::Now().GetNanoSeconds() / 1e9
+              << "," << kCategoryNames[static_cast<size_t>(cat)]
+              << "," << lpBytes << "\n";
+        return;
+    }
+
     auto idx = static_cast<size_t>(cat);
     m_counters[idx].packets++;
     // Count LP-encoded packet bytes (from the tag), excluding L2 headers.
     // This matches emulation's UDP-payload accounting (UDP payload = LP pkt).
-    m_counters[idx].bytes += tag.GetPayloadSize();
+    m_counters[idx].bytes += lpBytes;
 }
 
 void

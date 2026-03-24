@@ -125,3 +125,27 @@ build_lib_example(
         ${libinternet}
         ${libpoint-to-point}
 )
+
+# Atlas multi-hop DV routing changes scenario
+build_lib_example(
+    NAME ndndsim-atlas-multihop-scenario
+    SOURCE_FILES ndndsim-atlas-multihop-scenario.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)
+
+# Atlas routing-only scenario (no app traffic)
+build_lib_example(
+    NAME ndndsim-atlas-routing-scenario
+    SOURCE_FILES ndndsim-atlas-routing-scenario.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)
