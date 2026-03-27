@@ -36,6 +36,7 @@ static std::unordered_map<uint64_t, EventId> g_eventMap;
  */
 static std::unordered_map<uint32_t, std::function<void(uint32_t)>> g_dataProducedCallbacks;
 static std::unordered_map<uint32_t, std::vector<std::function<void(uint32_t, const std::string&)>>> g_dataReceivedCallbacks;
+static std::function<void()> g_routingConvergedCallback;
 
 /**
  * Callback: NDNd wants to send a packet on an ns-3 NetDevice.
@@ -160,6 +161,20 @@ OnDataReceived(uint32_t nodeId, uint32_t dataSize, const char* dataName, uint32_
     }
 }
 
+/**
+ * Callback: DV routing has converged (all nodes have routes to all others).
+ */
+static void
+OnRoutingConverged()
+{
+    NS_LOG_FUNCTION_NOARGS();
+    if (g_routingConvergedCallback)
+    {
+        // Schedule on simulator thread to ensure it runs in the right context
+        Simulator::ScheduleNow([cb = g_routingConvergedCallback]() { cb(); });
+    }
+}
+
 /*
  * Initialize the Go bridge with ns-3 callbacks.
  */
@@ -168,7 +183,7 @@ InitGoBridge()
 {
     NS_LOG_FUNCTION_NOARGS();
     NdndSimInit(&OnSendPacket, &OnScheduleEvent, &OnCancelEvent, &OnGetTimeNs,
-                &OnDataProduced, &OnDataReceived);
+                &OnDataProduced, &OnDataReceived, &OnRoutingConverged);
 }
 
 /*
@@ -182,6 +197,7 @@ DestroyGoBridge()
     g_eventMap.clear();
     g_dataProducedCallbacks.clear();
     g_dataReceivedCallbacks.clear();
+    g_routingConvergedCallback = nullptr;
 }
 
 void
@@ -195,6 +211,12 @@ RegisterDataReceivedCallback(uint32_t nodeId,
                               std::function<void(uint32_t, const std::string&)> cb)
 {
     g_dataReceivedCallbacks[nodeId].push_back(std::move(cb));
+}
+
+void
+RegisterRoutingConvergedCallback(std::function<void()> cb)
+{
+    g_routingConvergedCallback = std::move(cb);
 }
 
 } // namespace ndndsim

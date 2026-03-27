@@ -42,6 +42,7 @@ main(int argc, char* argv[])
     std::string network = "/minindn";
     double simTime = 30.0;
     double traceInterval = 0.05; // 50 ms
+    int numPrefixes = 0;         // prefixes per node to announce (0 = none)
 
     CommandLine cmd;
     cmd.AddValue("topo", "Topology file path (required)", topoFile);
@@ -52,6 +53,8 @@ main(int argc, char* argv[])
     cmd.AddValue("traceInterval", "Rate trace sampling interval in seconds", traceInterval);
     cmd.AddValue("dvConfig", "DV config JSON overlay (overrides defaults)", dvConfig);
     cmd.AddValue("network", "DV network prefix (default: /minindn)", network);
+    cmd.AddValue("numPrefixes",
+                 "Number of prefixes each node announces (0 = none)", numPrefixes);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(topoFile.empty(), "--topo is required");
@@ -70,6 +73,24 @@ main(int argc, char* argv[])
     NdndStackHelper stackHelper;
     stackHelper.Install(nodes);
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
+
+    // Announce synthetic prefixes on each node after DV convergence.
+    if (numPrefixes > 0)
+    {
+        NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
+        RegisterRoutingConvergedCallback([nodes, numPrefixes]() {
+            for (uint32_t i = 0; i < nodes.GetN(); ++i)
+            {
+                auto stack = nodes.Get(i)->GetObject<NdndStack>();
+                for (int j = 0; j < numPrefixes; ++j)
+                {
+                    std::string pfx =
+                        "/data/node" + std::to_string(i) + "/pfx" + std::to_string(j);
+                    stack->AnnouncePrefixToDv(pfx);
+                }
+            }
+        });
+    }
 
     // No consumer or producer — pure routing traffic measurement.
     // Convergence is tracked event-driven via RouterReachableEvent

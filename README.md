@@ -257,6 +257,15 @@ When using DV routing, start the consumer after a convergence delay (typically
 3–5 seconds for small topologies) to allow route advertisements to propagate.
 Producers automatically announce their prefixes to the DV protocol.
 
+**DV configuration options** (passed via `NdndStackHelper::EnableDvRouting()`):
+
+| Parameter | JSON key | Description |
+|-----------|----------|-------------|
+| Advertisement interval | `advertise_interval` | Period (ms) for sending DV sync Interests. `0` = default. |
+| Router dead interval | `router_dead_interval` | Timeout (ms) before declaring a neighbor dead. `0` = default. |
+| One-step mode | `one_step` | If `true`, prefixes go directly into DV adverts — no PrefixSync. |
+| PrefixSync delay | `prefix_sync_delay` | Delay (ms) before starting PrefixSync SVS. Useful for large topologies where DV needs time to converge before SVS starts. `0` = start immediately. |
+
 #### `NdndAppHelper` — Application Factory
 
 Creates and installs NDN applications on nodes.
@@ -422,6 +431,8 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-tree-tracers` | Tree topology from file + CSV rate tracing |
 | `ndndsim-sprint-churn` | Sprint PoP topology with random link flaps, prefix add/remove, DV routing, and classified link traffic measurement |
 | `ndndsim-atlas-scenario` | Fully parameterised grid scenario for DV convergence and traffic measurement (used by [atlas-scenarios](https://github.com/markverick/atlas-scenarios)) |
+| `ndndsim-atlas-routing-scenario` | Routing-only measurement (no app traffic): DV-only, one-step, and two-step prefix routing on NxN grids or conf-based topologies |
+| `ndndsim-atlas-churn-scenario` | Churn measurement: DV + prefix routing under link failure/recovery and prefix withdraw/re-announce events |
 
 ### Topology Files
 
@@ -547,7 +558,9 @@ contrib/ndndSIM/
 │   ├── ndndsim-topo-reader.cc    # Topology file reader
 │   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
 │   ├── ndndsim-sprint-churn.cc   # Sprint PoP topology + link/prefix churn
-│   ├── ndndsim-atlas-scenario.cc # Parameterised grid scenario (atlas)
+│   ├── ndndsim-atlas-scenario.cc          # Parameterised grid scenario (atlas)
+│   ├── ndndsim-atlas-routing-scenario.cc  # Routing-only (one-step vs two-step)
+│   ├── ndndsim-atlas-churn-scenario.cc    # Churn scenario (link/prefix events)
 │   ├── plot-ndndsim-traffic.py   # Traffic composition plotter
 │   └── topologies/               # Topology definition files
 ├── test/

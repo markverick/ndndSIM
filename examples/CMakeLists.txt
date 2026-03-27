@@ -149,3 +149,15 @@ build_lib_example(
         ${libinternet}
         ${libpoint-to-point}
 )
+
+# Atlas two-phase churn scenario
+build_lib_example(
+    NAME ndndsim-atlas-churn-scenario
+    SOURCE_FILES ndndsim-atlas-churn-scenario.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)

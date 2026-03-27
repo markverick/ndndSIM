@@ -44,6 +44,9 @@ extern "C"
     typedef void (*NdndSimDataReceivedFunc)(uint32_t nodeId, uint32_t dataSize,
                                             const char* dataName, uint32_t nameLen);
 
+    /** Called once when DV routing has converged (all nodes reachable). */
+    typedef void (*NdndSimRoutingConvergedFunc)(void);
+
     /*
      * Functions exported by the Go shared library.
      * These are implemented in sim/cgo_export.go.
@@ -55,7 +58,11 @@ extern "C"
                              NdndSimCancelEventFunc cancelEventCb,
                              NdndSimGetTimeNsFunc getTimeNsCb,
                              NdndSimDataProducedFunc dataProducedCb,
-                             NdndSimDataReceivedFunc dataReceivedCb);
+                             NdndSimDataReceivedFunc dataReceivedCb,
+                             NdndSimRoutingConvergedFunc routingConvergedCb);
+
+    /** Tell the Go runtime how many DV nodes exist so it can detect convergence. */
+    extern void NdndSimSetTotalNodes(int totalNodes);
 
     /** Create a new NDNd simulation node. Returns 0 on success, -1 on error. */
     extern int NdndSimCreateNode(uint32_t nodeId);
@@ -180,6 +187,10 @@ void RegisterDataProducedCallback(uint32_t nodeId, std::function<void(uint32_t)>
  *  The callback receives (dataSize, dataName). */
 void RegisterDataReceivedCallback(uint32_t nodeId,
                                    std::function<void(uint32_t, const std::string&)> cb);
+
+/** Register a callback invoked once when DV routing converges.
+ *  Must be called before Simulator::Run(). */
+void RegisterRoutingConvergedCallback(std::function<void()> cb);
 
 } // namespace ndndsim
 } // namespace ns3
