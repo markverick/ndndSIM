@@ -432,7 +432,7 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-sprint-churn` | Sprint PoP topology with random link flaps, prefix add/remove, DV routing, and classified link traffic measurement |
 | `ndndsim-atlas-scenario` | Fully parameterised grid scenario for DV convergence and traffic measurement (used by [atlas-scenarios](https://github.com/markverick/atlas-scenarios)) |
 | `ndndsim-atlas-routing-scenario` | Routing-only measurement (no app traffic): DV-only, one-step, and two-step prefix routing on NxN grids or conf-based topologies |
-| `ndndsim-atlas-churn-scenario` | Churn measurement: DV + prefix routing under link failure/recovery and prefix withdraw/re-announce events |
+| `ndndsim-atlas-churn-scenario` | Churn measurement: DV + prefix routing under link failure/recovery and prefix withdraw/re-announce events. Supports deferred churn scheduling (events start after DV convergence callback) and prefix-scaling mode |
 
 ### Topology Files
 
@@ -506,6 +506,8 @@ faithful to real deployments.
 
 ## Running Tests
 
+### C++ Test Suite (ns-3)
+
 ```bash
 # Run the full ndndSIM test suite (33 tests)
 ./ns3 run test-runner -- --suite=ndndsim --verbose
@@ -522,6 +524,29 @@ end-to-end trace verification (InterestSent + DataReceived + DataSent),
 multi-prefix topologies, topology reader correctness, sequence ordering,
 multi-consumer scenarios, EtherType filtering, cleanup, app lifecycle
 timing, and link failure/recovery.
+
+### Go Test Suite (pure-Go simulation)
+
+The `ndnd/sim/` package has its own test suite that exercises the Go
+simulation bridge **without ns-3** using a `DeterministicClock`:
+
+```bash
+cd ndnd && go test -count=1 -v ./sim/
+```
+
+28 tests covering:
+
+| Category | Tests | What they verify |
+|----------|-------|------------------|
+| Clock | 9 | Event scheduling, cancel, firing order, cross-clock isolation, self-rescheduling heartbeats |
+| Consumer | 3 | Interest loop, counting, stop |
+| DV integration | 16 | Two-node / three-node / diamond / line topologies, prefix withdrawal, producer mobility, link partition, link flap recovery, 3×3 grid reachability, link propagation delay, one-step mode, multiple prefixes, convergence time bound |
+
+Key design: `core.NowFunc` is overridden to use `DeterministicClock.Now()` so
+PIT expiration, CS freshness, and best-route strategy suppression all operate
+in simulated time — matching the ns-3 path which overrides `core.NowFunc` via
+`NdndSimGlobalInit`. Certificates are pre-populated across all nodes via
+`SimTrust.PreGenerateCerts()` to eliminate timing-dependent cert fetches.
 
 ## Module Structure
 
@@ -570,7 +595,10 @@ contrib/ndndSIM/
         ├── engine.go             #   SimEngine: synchronous packet dispatch
         ├── forwarder.go          #   SimForwarder: fw.Thread lifecycle
         ├── node.go               #   Per-node setup (faces, DV, trust)
-        └── trust.go              #   Ed25519 root + per-node keychain
+        ├── trust.go              #   Ed25519 root + per-node keychain (PreGenerateCerts)
+        ├── clock_test.go         #   DeterministicClock unit tests (9)
+        ├── consumer_test.go      #   Consumer loop tests (3)
+        └── dv_integration_test.go #  End-to-end DV integration tests (16)
 ```
 
 ## How It Works

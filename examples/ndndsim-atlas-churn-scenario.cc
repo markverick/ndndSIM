@@ -184,6 +184,69 @@ LogEvent(double t, const std::string& type, const std::string& details)
     g_eventLog.push_back({t, type, details});
 }
 
+// Actual churn start time (set when churn events are first scheduled)
+static double g_churnStartTime = -1.0;
+
+/**
+ * Schedule all parsed churn events.
+ *
+ * In legacy mode (baseTime == 0): event times are absolute sim-times,
+ *   scheduled with Simulator::Schedule(Seconds(ev.time), ...) from time 0.
+ * In deferred mode: event times are relative offsets, and this function is
+ *   called from within the sim at the desired start moment, so we use
+ *   Simulator::Schedule(Seconds(ev.time), ...) which adds the offset to Now().
+ *
+ * The logged absolute time is always baseTime + ev.time.
+ */
+static void
+ScheduleChurnEvents(const std::vector<ChurnEvent>& events, double baseTime)
+{
+    g_churnStartTime = baseTime;
+    for (const auto& ev : events)
+    {
+        double logTime = baseTime + ev.time;
+        if (ev.type == "link_down")
+        {
+            auto src = ev.fields.at("src");
+            auto dst = ev.fields.at("dst");
+            Simulator::Schedule(Seconds(ev.time), &DoLinkDown, src, dst);
+            LogEvent(logTime, "link_down", src + "--" + dst);
+        }
+        else if (ev.type == "link_up")
+        {
+            auto src = ev.fields.at("src");
+            auto dst = ev.fields.at("dst");
+            Simulator::Schedule(Seconds(ev.time), &DoLinkUp, src, dst);
+            LogEvent(logTime, "link_up", src + "--" + dst);
+        }
+        else if (ev.type == "prefix_withdraw")
+        {
+            auto nodeName = ev.fields.at("node");
+            auto pfx = ev.fields.at("prefix");
+            Ptr<Node> node = Names::Find<Node>(nodeName);
+            NS_ABORT_MSG_IF(!node, "Churn event: node not found: " << nodeName);
+            Simulator::Schedule(Seconds(ev.time), &DoPrefixWithdraw, node, pfx);
+            LogEvent(logTime, "prefix_withdraw", nodeName + " " + pfx);
+        }
+        else if (ev.type == "prefix_announce")
+        {
+            auto nodeName = ev.fields.at("node");
+            auto pfx = ev.fields.at("prefix");
+            Ptr<Node> node = Names::Find<Node>(nodeName);
+            NS_ABORT_MSG_IF(!node, "Churn event: node not found: " << nodeName);
+            Simulator::Schedule(Seconds(ev.time), &DoPrefixAnnounce, node, pfx);
+            LogEvent(logTime, "prefix_announce", nodeName + " " + pfx);
+        }
+        else
+        {
+            NS_ABORT_MSG("Unknown churn event type: " << ev.type);
+        }
+    }
+    std::cout << Simulator::Now().GetSeconds() << "s: CHURN PHASE STARTS ("
+              << events.size() << " events scheduled)" << std::endl;
+    LogEvent(baseTime, "churn_start", std::to_string(events.size()) + "_events");
+}
+
 // ─── Main ──────────────────────────────────────────────────────────
 
 int
@@ -194,12 +257,16 @@ main(int argc, char* argv[])
     std::string packetTrace;
     std::string convTrace;
     std::string eventLogFile;
+    std::string churnStartTrace;
     std::string dvConfig;
     std::string churnEventsJson;
     std::string network = "/minindn";
     double simTime = 60.0;
     double traceInterval = 0.05;
     int numPrefixes = 0;
+    bool churnAfterConvergence = false;
+    double churnMargin = 10.0;
+    double churnDuration = 0.0;  // 0 = use simTime as fixed end
 
     CommandLine cmd;
     cmd.AddValue("topo", "Topology file path (required)", topoFile);
@@ -207,12 +274,19 @@ main(int argc, char* argv[])
     cmd.AddValue("packetTrace", "Output per-packet event CSV path", packetTrace);
     cmd.AddValue("convTrace", "Output convergence time file path", convTrace);
     cmd.AddValue("eventLog", "Output event log CSV path", eventLogFile);
+    cmd.AddValue("churnStartTrace", "Output churn start time file path", churnStartTrace);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("traceInterval", "Link trace sampling interval in seconds", traceInterval);
     cmd.AddValue("dvConfig", "DV config JSON overlay", dvConfig);
     cmd.AddValue("network", "DV network prefix", network);
     cmd.AddValue("numPrefixes", "Prefixes per node to announce after convergence", numPrefixes);
     cmd.AddValue("churnEvents", "JSON array of churn events", churnEventsJson);
+    cmd.AddValue("churnAfterConvergence",
+                 "Defer churn events until after DV convergence + margin", churnAfterConvergence);
+    cmd.AddValue("churnMargin",
+                 "Seconds to wait after convergence before starting churn", churnMargin);
+    cmd.AddValue("churnDuration",
+                 "Churn phase duration in seconds (0 = use simTime as fixed end)", churnDuration);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(topoFile.empty(), "--topo is required");
@@ -259,15 +333,18 @@ main(int argc, char* argv[])
     stackHelper.Install(nodes);
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
 
-    // Announce prefixes after DV convergence
-    if (numPrefixes > 0)
+    // Announce prefixes after DV convergence, and optionally schedule churn
+    if (numPrefixes > 0 || churnAfterConvergence)
     {
         NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
-        RegisterRoutingConvergedCallback([nodes, numPrefixes]() {
-            std::cout << Simulator::Now().GetSeconds()
+        RegisterRoutingConvergedCallback(
+            [nodes, numPrefixes, churnAfterConvergence, churnMargin,
+             churnDuration, churnEvents]() {
+            double now = Simulator::Now().GetSeconds();
+            std::cout << now
                       << "s: DV CONVERGED — announcing " << numPrefixes
                       << " prefixes per node" << std::endl;
-            LogEvent(Simulator::Now().GetSeconds(), "dv_converged", "");
+            LogEvent(now, "dv_converged", "");
             for (uint32_t i = 0; i < nodes.GetN(); ++i)
             {
                 auto stack = nodes.Get(i)->GetObject<NdndStack>();
@@ -278,55 +355,37 @@ main(int argc, char* argv[])
                     stack->AnnouncePrefixToDv(pfx);
                 }
             }
-            LogEvent(Simulator::Now().GetSeconds(), "prefixes_announced",
+            LogEvent(now, "prefixes_announced",
                      std::to_string(numPrefixes) + "_per_node");
+
+            if (churnAfterConvergence && !churnEvents.empty())
+            {
+                double churnBase = now + churnMargin;
+                Simulator::Schedule(Seconds(churnMargin),
+                    [churnEvents, churnBase]() {
+                        ScheduleChurnEvents(churnEvents, churnBase);
+                    });
+            }
+
+            // Dynamic stop: always schedule when churn_after_convergence
+            // so even baseline (empty events) terminates promptly.
+            if (churnAfterConvergence && churnDuration > 0)
+            {
+                double stopDelay = churnMargin + churnDuration;
+                std::cout << now << "s: scheduling sim stop at t="
+                          << (now + stopDelay) << "s (conv + "
+                          << churnMargin << "s margin + "
+                          << churnDuration << "s churn)" << std::endl;
+                Simulator::Stop(Seconds(stopDelay));
+            }
         });
     }
 
-    // ─── Schedule churn events ─────────────────────────────────────
+    // ─── Schedule churn events (immediate mode — absolute times) ───
 
-    for (const auto& ev : churnEvents)
+    if (!churnAfterConvergence)
     {
-        if (ev.type == "link_down")
-        {
-            auto src = ev.fields.at("src");
-            auto dst = ev.fields.at("dst");
-            Simulator::Schedule(Seconds(ev.time),
-                                &DoLinkDown, src, dst);
-            LogEvent(ev.time, "link_down", src + "--" + dst);
-        }
-        else if (ev.type == "link_up")
-        {
-            auto src = ev.fields.at("src");
-            auto dst = ev.fields.at("dst");
-            Simulator::Schedule(Seconds(ev.time),
-                                &DoLinkUp, src, dst);
-            LogEvent(ev.time, "link_up", src + "--" + dst);
-        }
-        else if (ev.type == "prefix_withdraw")
-        {
-            auto nodeName = ev.fields.at("node");
-            auto pfx = ev.fields.at("prefix");
-            Ptr<Node> node = Names::Find<Node>(nodeName);
-            NS_ABORT_MSG_IF(!node, "Churn event: node not found: " << nodeName);
-            Simulator::Schedule(Seconds(ev.time),
-                                &DoPrefixWithdraw, node, pfx);
-            LogEvent(ev.time, "prefix_withdraw", nodeName + " " + pfx);
-        }
-        else if (ev.type == "prefix_announce")
-        {
-            auto nodeName = ev.fields.at("node");
-            auto pfx = ev.fields.at("prefix");
-            Ptr<Node> node = Names::Find<Node>(nodeName);
-            NS_ABORT_MSG_IF(!node, "Churn event: node not found: " << nodeName);
-            Simulator::Schedule(Seconds(ev.time),
-                                &DoPrefixAnnounce, node, pfx);
-            LogEvent(ev.time, "prefix_announce", nodeName + " " + pfx);
-        }
-        else
-        {
-            NS_ABORT_MSG("Unknown churn event type: " << ev.type);
-        }
+        ScheduleChurnEvents(churnEvents, 0.0);
     }
 
     // ─── Link Traffic Tracer ───────────────────────────────────────
@@ -353,6 +412,9 @@ main(int argc, char* argv[])
 
     // ─── Run ───────────────────────────────────────────────────────
 
+    // simTime acts as a hard backstop.  When churnAfterConvergence with
+    // churnDuration > 0, the convergence callback schedules an earlier
+    // Simulator::Stop that fires first, making the end time dynamic.
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
@@ -366,6 +428,13 @@ main(int argc, char* argv[])
             ofs << (static_cast<double>(convNs) / 1e9) << std::endl;
         else
             ofs << -1 << std::endl;
+    }
+
+    // Write churn start time (for phase splitting in Python)
+    if (!churnStartTrace.empty())
+    {
+        std::ofstream ofs(churnStartTrace);
+        ofs << g_churnStartTime << std::endl;
     }
 
     // Write event log

@@ -77,7 +77,13 @@ OnSendPacket(uint32_t nodeId, uint32_t ifIndex, const void* data, uint32_t dataL
 
     // Send as broadcast (NDN typically uses broadcast on shared media).
     // For point-to-point links, the destination address doesn't matter.
-    dev->Send(pkt, dev->GetBroadcast(), 0x8624); // NDN EtherType
+    bool ok = dev->Send(pkt, dev->GetBroadcast(), 0x8624); // NDN EtherType
+    if (!ok)
+    {
+        NS_LOG_WARN("OnSendPacket: dev->Send FAILED (queue full?) node="
+                     << nodeId << " ifIndex=" << ifIndex
+                     << " pktSize=" << dataLen);
+    }
 }
 
 /**
