@@ -69,6 +69,16 @@ class NdndStack : public Object
     void WithdrawPrefixFromDv(const std::string& prefix);
 
     /**
+     * Remove the NDNd face bound to a NetDevice interface.
+     */
+    void DeactivateInterface(uint32_t ifIndex);
+
+    /**
+     * Recreate the NDNd face bound to a NetDevice interface.
+     */
+    void ReactivateInterface(uint32_t ifIndex);
+
+    /**
      * Get the face ID for a specific NetDevice interface index.
      * Returns 0 if not found.
      */
@@ -81,6 +91,12 @@ class NdndStack : public Object
      * network, each node should have at least N entries under the network prefix.
      */
     int GetRibEntryCount(const std::string& prefix = "") const;
+
+    /**
+     * Get PrefixSync SVS suppression counters for this node's DV router.
+     * Returns true on success.
+     */
+    bool GetDvSuppressionStats(uint64_t& enter, uint64_t& ok, uint64_t& fail) const;
 
   protected:
     void DoDispose() override;

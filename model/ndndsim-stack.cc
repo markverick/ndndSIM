@@ -178,6 +178,36 @@ NdndStack::WithdrawPrefixFromDv(const std::string& prefix)
                                  static_cast<int>(p.size()));
 }
 
+void
+NdndStack::DeactivateInterface(uint32_t ifIndex)
+{
+    NS_ASSERT_MSG(m_installed, "NdndStack not installed");
+
+    auto it = m_faceIds.find(ifIndex);
+    if (it == m_faceIds.end())
+    {
+        return;
+    }
+
+    NdndSimRemoveFace(m_node->GetId(), ifIndex);
+    m_faceIds.erase(it);
+}
+
+void
+NdndStack::ReactivateInterface(uint32_t ifIndex)
+{
+    NS_ASSERT_MSG(m_installed, "NdndStack not installed");
+
+    if (m_faceIds.find(ifIndex) != m_faceIds.end())
+    {
+        return;
+    }
+
+    uint64_t faceId = NdndSimAddFace(m_node->GetId(), ifIndex);
+    NS_ASSERT_MSG(faceId != 0, "Failed to recreate NDNd face for interface " << ifIndex);
+    m_faceIds[ifIndex] = faceId;
+}
+
 uint64_t
 NdndStack::GetFaceId(uint32_t ifIndex) const
 {
@@ -204,6 +234,20 @@ NdndStack::GetRibEntryCount(const std::string& prefix) const
     return NdndSimGetRibEntryCount(m_node->GetId(),
                                    const_cast<char*>(p.c_str()),
                                    static_cast<int>(p.size()));
+}
+
+bool
+NdndStack::GetDvSuppressionStats(uint64_t& enter, uint64_t& ok, uint64_t& fail) const
+{
+    if (!m_installed || !m_node)
+    {
+        return false;
+    }
+
+    enter = 0;
+    ok = 0;
+    fail = 0;
+    return NdndSimGetDvSuppressionStats(m_node->GetId(), &enter, &ok, &fail) == 0;
 }
 
 } // namespace ndndsim

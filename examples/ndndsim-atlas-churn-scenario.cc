@@ -11,6 +11,8 @@
  * Churn events are passed via --churnEvents as a JSON array:
  *   [{"time":20.0,"type":"link_down","src":"n0_0","dst":"n0_1"},
  *    {"time":25.0,"type":"link_up","src":"n0_0","dst":"n0_1"},
+ *    {"time":20.0,"type":"neighbor_down","src":"n0_0","dst":"n0_1"},
+ *    {"time":25.0,"type":"neighbor_up","src":"n0_0","dst":"n0_1"},
  *    {"time":22.0,"type":"prefix_withdraw","node":"n0_0","prefix":"/data/n0_0/pfx0"},
  *    {"time":27.0,"type":"prefix_announce","node":"n0_0","prefix":"/data/n0_0/pfx0"}]
  *
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -117,8 +120,15 @@ struct LinkErrorModels
     Ptr<RateErrorModel> rev; // to → from
 };
 
+struct LinkInterfaces
+{
+    uint32_t fromIf;
+    uint32_t toIf;
+};
+
 // Key: "srcName:dstName" (alphabetically ordered)
 static std::map<std::string, LinkErrorModels> g_linkErrors;
+static std::map<std::string, LinkInterfaces> g_linkInterfaces;
 
 static std::string
 LinkKey(const std::string& a, const std::string& b)
@@ -151,6 +161,48 @@ DoLinkUp(const std::string& src, const std::string& dst)
 }
 
 static void
+DoNeighborDown(const std::string& src, const std::string& dst)
+{
+    auto key = LinkKey(src, dst);
+    auto it = g_linkInterfaces.find(key);
+    NS_ABORT_MSG_IF(it == g_linkInterfaces.end(),
+                    "Link interface state not found for " << src << "--" << dst);
+
+    auto srcNode = Names::Find<Node>(src);
+    auto dstNode = Names::Find<Node>(dst);
+    NS_ABORT_MSG_IF(!srcNode || !dstNode, "Neighbor-down nodes not found for " << src << "--" << dst);
+
+    auto srcStack = srcNode->GetObject<NdndStack>();
+    auto dstStack = dstNode->GetObject<NdndStack>();
+    NS_ABORT_MSG_IF(!srcStack || !dstStack, "NDNd stack missing for " << src << "--" << dst);
+
+    std::cout << Simulator::Now().GetSeconds() << "s: NEIGHBOR DOWN " << src << "--" << dst << std::endl;
+    srcStack->DeactivateInterface(it->second.fromIf);
+    dstStack->DeactivateInterface(it->second.toIf);
+}
+
+static void
+DoNeighborUp(const std::string& src, const std::string& dst)
+{
+    auto key = LinkKey(src, dst);
+    auto it = g_linkInterfaces.find(key);
+    NS_ABORT_MSG_IF(it == g_linkInterfaces.end(),
+                    "Link interface state not found for " << src << "--" << dst);
+
+    auto srcNode = Names::Find<Node>(src);
+    auto dstNode = Names::Find<Node>(dst);
+    NS_ABORT_MSG_IF(!srcNode || !dstNode, "Neighbor-up nodes not found for " << src << "--" << dst);
+
+    auto srcStack = srcNode->GetObject<NdndStack>();
+    auto dstStack = dstNode->GetObject<NdndStack>();
+    NS_ABORT_MSG_IF(!srcStack || !dstStack, "NDNd stack missing for " << src << "--" << dst);
+
+    std::cout << Simulator::Now().GetSeconds() << "s: NEIGHBOR UP " << src << "--" << dst << std::endl;
+    srcStack->ReactivateInterface(it->second.fromIf);
+    dstStack->ReactivateInterface(it->second.toIf);
+}
+
+static void
 DoPrefixAnnounce(Ptr<Node> node, const std::string& prefix)
 {
     auto stack = node->GetObject<NdndStack>();
@@ -178,10 +230,165 @@ struct EventLogEntry
 };
 static std::vector<EventLogEntry> g_eventLog;
 
+struct SuppressionNodeStats
+{
+    std::string node;
+    bool available;
+    uint64_t enter;
+    uint64_t ok;
+    uint64_t fail;
+};
+
+struct SuppressionSnapshot
+{
+    std::vector<SuppressionNodeStats> nodes;
+    uint64_t totalEnter = 0;
+    uint64_t totalOk = 0;
+    uint64_t totalFail = 0;
+};
+
+static std::unique_ptr<SuppressionSnapshot> g_suppressionStart;
+static double g_suppressionStartTime = -1.0;
+
 static void
 LogEvent(double t, const std::string& type, const std::string& details)
 {
     g_eventLog.push_back({t, type, details});
+}
+
+static SuppressionSnapshot
+CollectSuppressionSnapshot(const NodeContainer& nodes)
+{
+    SuppressionSnapshot snapshot;
+    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    {
+        auto node = nodes.Get(i);
+        auto stack = node->GetObject<NdndStack>();
+        uint64_t enter = 0;
+        uint64_t ok = 0;
+        uint64_t fail = 0;
+        bool available = stack && stack->GetDvSuppressionStats(enter, ok, fail);
+        snapshot.nodes.push_back({
+            Names::FindName(node),
+            available,
+            enter,
+            ok,
+            fail,
+        });
+        snapshot.totalEnter += enter;
+        snapshot.totalOk += ok;
+        snapshot.totalFail += fail;
+    }
+    return snapshot;
+}
+
+static void
+WriteSuppressionNodeArray(std::ofstream& ofs,
+                         const std::vector<SuppressionNodeStats>& nodes,
+                         const SuppressionSnapshot* startSnapshot)
+{
+    ofs << "[\n";
+    for (size_t i = 0; i < nodes.size(); ++i)
+    {
+        const auto& endNode = nodes[i];
+        uint64_t startEnter = 0;
+        uint64_t startOk = 0;
+        uint64_t startFail = 0;
+        bool available = endNode.available;
+        if (startSnapshot != nullptr && i < startSnapshot->nodes.size())
+        {
+            const auto& startNode = startSnapshot->nodes[i];
+            startEnter = startNode.enter;
+            startOk = startNode.ok;
+            startFail = startNode.fail;
+            available = available || startNode.available;
+        }
+
+        uint64_t enter = endNode.enter - startEnter;
+        uint64_t ok = endNode.ok - startOk;
+        uint64_t fail = endNode.fail - startFail;
+
+        ofs << "      {\"node\":\"" << endNode.node << "\",";
+        ofs << "\"available\":" << (available ? "true" : "false") << ",";
+        ofs << "\"enter\":" << enter << ",";
+        ofs << "\"ok\":" << ok << ",";
+        ofs << "\"fail\":" << fail << ",";
+        ofs << "\"unresolved\":" << (enter - ok - fail) << "}";
+        if (i + 1 != nodes.size())
+        {
+            ofs << ",";
+        }
+        ofs << "\n";
+    }
+    ofs << "    ]";
+}
+
+static void
+WriteSuppressionSnapshot(std::ofstream& ofs, const SuppressionSnapshot& snapshot)
+{
+    ofs << "{\n";
+    ofs << "      \"nodes\": [\n";
+    for (size_t i = 0; i < snapshot.nodes.size(); ++i)
+    {
+        const auto& node = snapshot.nodes[i];
+        ofs << "        {\"node\":\"" << node.node << "\",";
+        ofs << "\"available\":" << (node.available ? "true" : "false") << ",";
+        ofs << "\"enter\":" << node.enter << ",";
+        ofs << "\"ok\":" << node.ok << ",";
+        ofs << "\"fail\":" << node.fail << ",";
+        ofs << "\"unresolved\":" << (node.enter - node.ok - node.fail) << "}";
+        if (i + 1 != snapshot.nodes.size())
+        {
+            ofs << ",";
+        }
+        ofs << "\n";
+    }
+    ofs << "      ],\n";
+    ofs << "      \"aggregate\": {";
+    ofs << "\"enter\":" << snapshot.totalEnter << ",";
+    ofs << "\"ok\":" << snapshot.totalOk << ",";
+    ofs << "\"fail\":" << snapshot.totalFail << ",";
+    ofs << "\"unresolved\":"
+        << (snapshot.totalEnter - snapshot.totalOk - snapshot.totalFail) << "}\n";
+    ofs << "    }";
+}
+
+static void
+WriteSuppressionTrace(const SuppressionSnapshot* startSnapshot,
+                     const SuppressionSnapshot& endSnapshot,
+                     double startTime,
+                     double endTime,
+                     const std::string& path)
+{
+    std::ofstream ofs(path);
+    const SuppressionSnapshot emptyStart;
+    const auto& start = startSnapshot != nullptr ? *startSnapshot : emptyStart;
+    uint64_t deltaEnter = endSnapshot.totalEnter - start.totalEnter;
+    uint64_t deltaOk = endSnapshot.totalOk - start.totalOk;
+    uint64_t deltaFail = endSnapshot.totalFail - start.totalFail;
+
+    ofs << "{\n";
+    ofs << "  \"phase\": \"churn\",\n";
+    ofs << "  \"window\": {";
+    ofs << "\"start_s\":" << startTime << ",";
+    ofs << "\"end_s\":" << endTime << ",";
+    ofs << "\"duration_s\":" << (endTime - startTime) << "},\n";
+    ofs << "  \"nodes\": ";
+    WriteSuppressionNodeArray(ofs, endSnapshot.nodes, startSnapshot);
+    ofs << ",\n";
+    ofs << "  \"aggregate\": {";
+    ofs << "\"enter\":" << deltaEnter << ",";
+    ofs << "\"ok\":" << deltaOk << ",";
+    ofs << "\"fail\":" << deltaFail << ",";
+    ofs << "\"unresolved\":" << (deltaEnter - deltaOk - deltaFail) << "},\n";
+    ofs << "  \"snapshots\": {\n";
+    ofs << "    \"start\": ";
+    WriteSuppressionSnapshot(ofs, start);
+    ofs << ",\n";
+    ofs << "    \"end\": ";
+    WriteSuppressionSnapshot(ofs, endSnapshot);
+    ofs << "\n  }\n";
+    ofs << "}\n";
 }
 
 // Actual churn start time (set when churn events are first scheduled)
@@ -218,6 +425,20 @@ ScheduleChurnEvents(const std::vector<ChurnEvent>& events, double baseTime)
             auto dst = ev.fields.at("dst");
             Simulator::Schedule(Seconds(ev.time), &DoLinkUp, src, dst);
             LogEvent(logTime, "link_up", src + "--" + dst);
+        }
+        else if (ev.type == "neighbor_down")
+        {
+            auto src = ev.fields.at("src");
+            auto dst = ev.fields.at("dst");
+            Simulator::Schedule(Seconds(ev.time), &DoNeighborDown, src, dst);
+            LogEvent(logTime, "neighbor_down", src + "--" + dst);
+        }
+        else if (ev.type == "neighbor_up")
+        {
+            auto src = ev.fields.at("src");
+            auto dst = ev.fields.at("dst");
+            Simulator::Schedule(Seconds(ev.time), &DoNeighborUp, src, dst);
+            LogEvent(logTime, "neighbor_up", src + "--" + dst);
         }
         else if (ev.type == "prefix_withdraw")
         {
@@ -258,6 +479,8 @@ main(int argc, char* argv[])
     std::string convTrace;
     std::string eventLogFile;
     std::string churnStartTrace;
+    std::string suppressTrace;
+    double suppressPhaseStart = -1.0;
     std::string dvConfig;
     std::string churnEventsJson;
     std::string network = "/minindn";
@@ -275,6 +498,8 @@ main(int argc, char* argv[])
     cmd.AddValue("convTrace", "Output convergence time file path", convTrace);
     cmd.AddValue("eventLog", "Output event log CSV path", eventLogFile);
     cmd.AddValue("churnStartTrace", "Output churn start time file path", churnStartTrace);
+    cmd.AddValue("suppressTrace", "Output SVS suppression JSON path", suppressTrace);
+    cmd.AddValue("suppressPhaseStart", "Churn phase start time for SVS suppression delta", suppressPhaseStart);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("traceInterval", "Link trace sampling interval in seconds", traceInterval);
     cmd.AddValue("dvConfig", "DV config JSON overlay", dvConfig);
@@ -293,6 +518,8 @@ main(int argc, char* argv[])
 
     // Parse churn events
     auto churnEvents = ParseChurnEvents(churnEventsJson);
+    g_suppressionStart.reset();
+    g_suppressionStartTime = -1.0;
 
     // ─── Topology ──────────────────────────────────────────────────
 
@@ -322,6 +549,10 @@ main(int argc, char* argv[])
             link.devices.Get(1)->SetAttribute("ReceiveErrorModel",
                                                PointerValue(lem.fwd));
             g_linkErrors[key] = lem;
+            g_linkInterfaces[key] = {
+                link.devices.Get(0)->GetIfIndex(),
+                link.devices.Get(1)->GetIfIndex(),
+            };
         }
     }
 
@@ -337,9 +568,10 @@ main(int argc, char* argv[])
     if (numPrefixes > 0 || churnAfterConvergence)
     {
         NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
+        bool collectSuppression = !suppressTrace.empty();
         RegisterRoutingConvergedCallback(
             [nodes, numPrefixes, churnAfterConvergence, churnMargin,
-             churnDuration, churnEvents]() {
+             churnDuration, churnEvents, collectSuppression]() {
             double now = Simulator::Now().GetSeconds();
             std::cout << now
                       << "s: DV CONVERGED — announcing " << numPrefixes
@@ -362,7 +594,13 @@ main(int argc, char* argv[])
             {
                 double churnBase = now + churnMargin;
                 Simulator::Schedule(Seconds(churnMargin),
-                    [churnEvents, churnBase]() {
+                    [nodes, churnEvents, churnBase, collectSuppression]() {
+                        if (collectSuppression)
+                        {
+                            g_suppressionStart = std::make_unique<SuppressionSnapshot>(
+                                CollectSuppressionSnapshot(nodes));
+                            g_suppressionStartTime = Simulator::Now().GetSeconds();
+                        }
                         ScheduleChurnEvents(churnEvents, churnBase);
                     });
             }
@@ -385,6 +623,14 @@ main(int argc, char* argv[])
 
     if (!churnAfterConvergence)
     {
+        if (!suppressTrace.empty() && suppressPhaseStart >= 0.0)
+        {
+            Simulator::Schedule(Seconds(suppressPhaseStart), [nodes]() {
+                g_suppressionStart = std::make_unique<SuppressionSnapshot>(
+                    CollectSuppressionSnapshot(nodes));
+                g_suppressionStartTime = Simulator::Now().GetSeconds();
+            });
+        }
         ScheduleChurnEvents(churnEvents, 0.0);
     }
 
@@ -446,6 +692,15 @@ main(int argc, char* argv[])
         {
             ofs << e.time << "," << e.type << "," << e.details << std::endl;
         }
+    }
+
+    if (!suppressTrace.empty())
+    {
+        auto endSnapshot = CollectSuppressionSnapshot(nodes);
+        double endTime = Simulator::Now().GetSeconds();
+        double startTime = g_suppressionStart ? g_suppressionStartTime : 0.0;
+        WriteSuppressionTrace(g_suppressionStart.get(), endSnapshot, startTime, endTime,
+                              suppressTrace);
     }
 
     if (linkTracer)
