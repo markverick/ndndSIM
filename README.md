@@ -263,7 +263,6 @@ Producers automatically announce their prefixes to the DV protocol.
 |-----------|----------|-------------|
 | Advertisement interval | `advertise_interval` | Period (ms) for sending DV sync Interests. `0` = default. |
 | Router dead interval | `router_dead_interval` | Timeout (ms) before declaring a neighbor dead. `0` = default. |
-| One-step mode | `one_step` | If `true`, prefixes go directly into DV adverts — no PrefixSync. |
 | PrefixSync delay | `prefix_sync_delay` | Delay (ms) before starting PrefixSync SVS. Useful for large topologies where DV needs time to converge before SVS starts. `0` = start immediately. |
 
 #### `NdndAppHelper` — Application Factory
@@ -431,7 +430,7 @@ All examples are in `contrib/ndndSIM/examples/`. Run any example with:
 | `ndndsim-tree-tracers` | Tree topology from file + CSV rate tracing |
 | `ndndsim-sprint-churn` | Sprint PoP topology with random link flaps, prefix add/remove, DV routing, and classified link traffic measurement |
 | `ndndsim-atlas-scenario` | Fully parameterised grid scenario for DV convergence and traffic measurement (used by [atlas-scenarios](https://github.com/markverick/atlas-scenarios)) |
-| `ndndsim-atlas-routing-scenario` | Routing-only measurement (no app traffic): DV-only, one-step, and two-step prefix routing on NxN grids or conf-based topologies |
+| `ndndsim-atlas-routing-scenario` | Routing-only measurement (no app traffic): DV + prefix routing on NxN grids or conf-based topologies |
 | `ndndsim-atlas-churn-scenario` | Churn measurement: DV + prefix routing under link failure/recovery and prefix withdraw/re-announce events. Supports deferred churn scheduling (events start after DV convergence callback) and prefix-scaling mode |
 
 ### Topology Files
@@ -540,7 +539,7 @@ cd ndnd && go test -count=1 -v ./sim/
 |----------|-------|------------------|
 | Clock | 9 | Event scheduling, cancel, firing order, cross-clock isolation, self-rescheduling heartbeats |
 | Consumer | 3 | Interest loop, counting, stop |
-| DV integration | 16 | Two-node / three-node / diamond / line topologies, prefix withdrawal, producer mobility, link partition, link flap recovery, 3×3 grid reachability, link propagation delay, one-step mode, multiple prefixes, convergence time bound |
+| DV integration | 15 | Two-node / three-node / diamond / line topologies, prefix withdrawal, producer mobility, link partition, link flap recovery, 3×3 grid reachability, link propagation delay, multiple prefixes, convergence time bound |
 
 Key design: `core.NowFunc` is overridden to use `DeterministicClock.Now()` so
 PIT expiration, CS freshness, and best-route strategy suppression all operate
@@ -584,7 +583,7 @@ contrib/ndndSIM/
 │   ├── ndndsim-tree-tracers.cc   # Tree + CSV tracing
 │   ├── ndndsim-sprint-churn.cc   # Sprint PoP topology + link/prefix churn
 │   ├── ndndsim-atlas-scenario.cc          # Parameterised grid scenario (atlas)
-│   ├── ndndsim-atlas-routing-scenario.cc  # Routing-only (one-step vs two-step)
+│   ├── ndndsim-atlas-routing-scenario.cc  # Routing-only measurement
 │   ├── ndndsim-atlas-churn-scenario.cc    # Churn scenario (link/prefix events)
 │   ├── plot-ndndsim-traffic.py   # Traffic composition plotter
 │   └── topologies/               # Topology definition files

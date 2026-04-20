@@ -1,0 +1,14 @@
+# Auto-generated NxN grid topology
+router
+# node  comment  yPos  xPos
+n0_0  NA  0  0
+n0_1  NA  0  1
+n1_0  NA  1  0
+n1_1  NA  1  1
+
+link
+# srcNode  dstNode  bandwidth  metric  delay  queue
+n0_0  n0_1  10Mbps  1  10ms  100
+n0_0  n1_0  10Mbps  1  10ms  100
+n0_1  n1_1  10Mbps  1  10ms  100
+n1_0  n1_1  10Mbps  1  10ms  100

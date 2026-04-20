@@ -15,7 +15,9 @@
 
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ns3
 {
@@ -26,9 +28,15 @@ namespace ndndsim
 {
 
 /*
- * Map from Go event IDs to ns-3 EventIds for cancellation support.
+ * Track pending/canceled Go event IDs. We cannot use ns-3 EventId here
+ * because Schedule()/Cancel() are thread-unsafe; Go worker threads must use
+ * ScheduleWithContext(), and cancellation is implemented logically when the
+ * trampoline fires on the simulator thread.
  */
-static std::unordered_map<uint64_t, EventId> g_eventMap;
+static std::unordered_set<uint64_t> g_pendingEvents;
+static std::unordered_set<uint64_t> g_canceledEvents;
+static std::mutex g_bridgeMutex;
+static bool g_bridgeActive = false;
 
 /*
  * Per-node callbacks for Data produced (producer) and Data received (consumer).
@@ -46,6 +54,14 @@ static void
 OnSendPacket(uint32_t nodeId, uint32_t ifIndex, const void* data, uint32_t dataLen)
 {
     NS_LOG_FUNCTION(nodeId << ifIndex << dataLen);
+
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+    }
 
     Ptr<Node> node = NodeList::GetNode(nodeId);
     if (!node)
@@ -94,7 +110,18 @@ static void
 FireEventTrampoline(uint32_t nodeId, uint64_t eventId)
 {
     NS_LOG_FUNCTION(nodeId << eventId);
-    g_eventMap.erase(eventId);
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        g_pendingEvents.erase(eventId);
+        if (g_canceledEvents.erase(eventId) != 0)
+        {
+            return;
+        }
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+    }
     NdndSimFireEvent(nodeId, eventId);
 }
 
@@ -106,9 +133,18 @@ OnScheduleEvent(uint32_t nodeId, int64_t delayNs, uint64_t eventId)
 {
     NS_LOG_FUNCTION(nodeId << delayNs << eventId);
 
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+        g_pendingEvents.insert(eventId);
+        g_canceledEvents.erase(eventId);
+    }
+
     Time delay = NanoSeconds(delayNs);
-    EventId eid = Simulator::Schedule(delay, &FireEventTrampoline, nodeId, eventId);
-    g_eventMap[eventId] = eid;
+    Simulator::ScheduleWithContext(nodeId, delay, &FireEventTrampoline, nodeId, eventId);
 }
 
 /**
@@ -118,11 +154,16 @@ static void
 OnCancelEvent(uint64_t eventId)
 {
     NS_LOG_FUNCTION(eventId);
-    auto it = g_eventMap.find(eventId);
-    if (it != g_eventMap.end())
     {
-        Simulator::Cancel(it->second);
-        g_eventMap.erase(it);
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+        if (g_pendingEvents.find(eventId) != g_pendingEvents.end())
+        {
+            g_canceledEvents.insert(eventId);
+        }
     }
 }
 
@@ -132,6 +173,11 @@ OnCancelEvent(uint64_t eventId)
 static int64_t
 OnGetTimeNs()
 {
+    std::lock_guard<std::mutex> lock(g_bridgeMutex);
+    if (!g_bridgeActive)
+    {
+        return 0;
+    }
     return Simulator::Now().GetNanoSeconds();
 }
 
@@ -142,10 +188,22 @@ static void
 OnDataProduced(uint32_t nodeId, uint32_t dataSize)
 {
     NS_LOG_FUNCTION(nodeId << dataSize);
-    auto it = g_dataProducedCallbacks.find(nodeId);
-    if (it != g_dataProducedCallbacks.end())
+    std::function<void(uint32_t)> cb;
     {
-        it->second(dataSize);
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+        auto it = g_dataProducedCallbacks.find(nodeId);
+        if (it != g_dataProducedCallbacks.end())
+        {
+            cb = it->second;
+        }
+    }
+    if (cb)
+    {
+        cb(dataSize);
     }
 }
 
@@ -156,11 +214,23 @@ static void
 OnDataReceived(uint32_t nodeId, uint32_t dataSize, const char* dataName, uint32_t nameLen)
 {
     NS_LOG_FUNCTION(nodeId << dataSize);
-    auto it = g_dataReceivedCallbacks.find(nodeId);
-    if (it != g_dataReceivedCallbacks.end())
+    std::vector<std::function<void(uint32_t, const std::string&)>> callbacks;
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+        auto it = g_dataReceivedCallbacks.find(nodeId);
+        if (it != g_dataReceivedCallbacks.end())
+        {
+            callbacks = it->second;
+        }
+    }
+    if (!callbacks.empty())
     {
         std::string name(dataName, nameLen);
-        for (auto& cb : it->second)
+        for (auto& cb : callbacks)
         {
             cb(dataSize, name);
         }
@@ -174,10 +244,19 @@ static void
 OnRoutingConverged()
 {
     NS_LOG_FUNCTION_NOARGS();
-    if (g_routingConvergedCallback)
+    std::function<void()> cb;
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        if (!g_bridgeActive)
+        {
+            return;
+        }
+        cb = g_routingConvergedCallback;
+    }
+    if (cb)
     {
         // Schedule on simulator thread to ensure it runs in the right context
-        Simulator::ScheduleNow([cb = g_routingConvergedCallback]() { cb(); });
+        Simulator::ScheduleNow([cb = std::move(cb)]() { cb(); });
     }
 }
 
@@ -188,6 +267,10 @@ void
 InitGoBridge()
 {
     NS_LOG_FUNCTION_NOARGS();
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        g_bridgeActive = true;
+    }
     NdndSimInit(&OnSendPacket, &OnScheduleEvent, &OnCancelEvent, &OnGetTimeNs,
                 &OnDataProduced, &OnDataReceived, &OnRoutingConverged);
 }
@@ -199,16 +282,25 @@ void
 DestroyGoBridge()
 {
     NS_LOG_FUNCTION_NOARGS();
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        g_bridgeActive = false;
+    }
     NdndSimDestroy();
-    g_eventMap.clear();
-    g_dataProducedCallbacks.clear();
-    g_dataReceivedCallbacks.clear();
-    g_routingConvergedCallback = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_bridgeMutex);
+        g_pendingEvents.clear();
+        g_canceledEvents.clear();
+        g_dataProducedCallbacks.clear();
+        g_dataReceivedCallbacks.clear();
+        g_routingConvergedCallback = nullptr;
+    }
 }
 
 void
 RegisterDataProducedCallback(uint32_t nodeId, std::function<void(uint32_t)> cb)
 {
+    std::lock_guard<std::mutex> lock(g_bridgeMutex);
     g_dataProducedCallbacks[nodeId] = std::move(cb);
 }
 
@@ -216,12 +308,17 @@ void
 RegisterDataReceivedCallback(uint32_t nodeId,
                               std::function<void(uint32_t, const std::string&)> cb)
 {
+    std::lock_guard<std::mutex> lock(g_bridgeMutex);
     g_dataReceivedCallbacks[nodeId].push_back(std::move(cb));
 }
 
 void
 RegisterRoutingConvergedCallback(std::function<void()> cb)
 {
+    std::lock_guard<std::mutex> lock(g_bridgeMutex);
+    NS_ASSERT_MSG(!g_routingConvergedCallback,
+                  "RegisterRoutingConvergedCallback: callback already registered; "
+                  "second registration would silently replace the first");
     g_routingConvergedCallback = std::move(cb);
 }
 

@@ -1,0 +1,11 @@
+# Auto-generated linear topology
+router
+# node  comment  yPos  xPos
+a  NA  0  0
+b  NA  0  1
+c  NA  0  2
+
+link
+# srcNode  dstNode  bandwidth  metric  delay  queue
+a  b  10Mbps  1  10ms  100
+b  c  10Mbps  1  10ms  100

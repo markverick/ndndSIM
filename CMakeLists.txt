@@ -43,7 +43,7 @@ endif()
 
 # ─── Find Go toolchain ──────────────────────────────────────────────────
 #
-# go.mod requires Go 1.25+. The setup script downloads a Go 1.25
+# go.mod requires Go 1.24+. The setup script may download a recent Go
 # toolchain into GOPATH. Try to locate it; fall back to system Go.
 #
 set(_GOPATH "$ENV{GOPATH}")
@@ -51,7 +51,7 @@ if(NOT _GOPATH)
     set(_GOPATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../gopath")
 endif()
 
-file(GLOB _GO_TOOLCHAINS "${_GOPATH}/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.*.linux-amd64/bin/go")
+file(GLOB _GO_TOOLCHAINS "${_GOPATH}/pkg/mod/golang.org/toolchain@v0.0.1-go1.*.linux-amd64/bin/go")
 if(_GO_TOOLCHAINS)
     list(SORT _GO_TOOLCHAINS)
     list(GET _GO_TOOLCHAINS -1 _GO_BIN)
@@ -64,7 +64,7 @@ else()
 endif()
 
 if(NOT _GO_BIN)
-    message(FATAL_ERROR "ndndSIM: Go compiler not found. Run setup.sh or install Go 1.25+")
+    message(FATAL_ERROR "ndndSIM: Go compiler not found. Run setup.sh or install Go 1.24+")
 endif()
 
 execute_process(
@@ -74,8 +74,8 @@ execute_process(
 )
 string(REGEX MATCH "go([0-9]+\\.[0-9]+(\\.[0-9]+)?)" _GO_VER_MATCH "${_GO_VERSION_STR}")
 set(_GO_VERSION "${CMAKE_MATCH_1}")
-if(_GO_VERSION VERSION_LESS "1.25")
-    message(FATAL_ERROR "ndndSIM: selected Go is too old (${_GO_VERSION_STR}). Need Go 1.25+")
+if(_GO_VERSION VERSION_LESS "1.24")
+    message(FATAL_ERROR "ndndSIM: selected Go is too old (${_GO_VERSION_STR}). Need Go 1.24+")
 endif()
 
 message(STATUS "ndndSIM: using Go: ${_GO_BIN}")
