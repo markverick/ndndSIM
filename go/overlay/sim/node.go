@@ -307,6 +307,14 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 	for _, faceID := range n.ifaceFaces {
 		n.Forwarder.AddRouteWithOrigin(neighborsPrefix, faceID, 1, config.NlsrOrigin)
 	}
+	// In onephase there is no multicastFib/BROADCAST_STRATEGY; install explicit
+	// link-face routes for DV sync prefixes so heartbeats reach neighbors.
+	// In twophase LinkMulticastPrefixes() returns nil — no-op.
+	for _, prefix := range sdv.LinkMulticastPrefixes() {
+		for _, faceID := range n.ifaceFaces {
+			n.Forwarder.AddRouteWithOrigin(prefix, faceID, 1, config.NlsrOrigin)
+		}
+	}
 
 	n.dvRouter = sdv
 	return nil

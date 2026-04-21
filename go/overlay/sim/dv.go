@@ -164,6 +164,14 @@ func (sd *SimDvRouter) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	return sd.router.PrefixSyncSuppressionStats()
 }
 
+// LinkMulticastPrefixes returns the prefixes that must be forwarded to all
+// link faces for DV sync to reach neighbors. Returns nil for twophase (the
+// multicastFib BROADCAST_STRATEGY handles it), and the actual sync prefixes
+// for onephase (no multicastFib, explicit routes needed).
+func (sd *SimDvRouter) LinkMulticastPrefixes() []enc.Name {
+	return sd.router.LinkMulticastPrefixes()
+}
+
 // AnnouncePrefix sends a readvertise Interest to the DV router's management
 // handler, causing it to announce the prefix to all DV neighbors.
 // This replicates what the production forwarder's NlsrReadvertiser does when

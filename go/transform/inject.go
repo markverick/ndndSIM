@@ -412,6 +412,14 @@ func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	}
 	return dv.pfx.SuppressionStats()
 }
+
+// LinkMulticastPrefixes returns prefixes that must be forwarded to all link
+// faces for DV sync to reach neighbors.
+// In twophase, the multicastFib BROADCAST_STRATEGY handles this automatically;
+// return nil so the caller skips explicit link-face route installation.
+func (dv *Router) LinkMulticastPrefixes() []enc.Name {
+	return nil
+}
 `
 
 // ---------------------------------------------------------------------------
@@ -665,6 +673,17 @@ func (dv *Router) Nfdc() *nfdc.NfdMgmtThread {
 // At main@51774b8 PrefixTable has no SuppressionStats; return empty.
 func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	return ndn_sync.SuppressStats{}
+}
+
+// LinkMulticastPrefixes returns the prefixes that must be explicitly forwarded
+// to all link faces for DV sync to reach neighbors.
+// At main@51774b8 there is no multicastFib/BROADCAST_STRATEGY; the caller
+// must install explicit RIB routes to every link face for these prefixes.
+func (dv *Router) LinkMulticastPrefixes() []enc.Name {
+	return []enc.Name{
+		dv.config.AdvertisementSyncPrefix(),
+		dv.pfxSvs.SyncPrefix(),
+	}
 }
 `
 
