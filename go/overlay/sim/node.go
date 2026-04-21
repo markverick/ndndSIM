@@ -283,12 +283,12 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 	cfg.TrustAnchors = anchors
 
 	// In simulation there is no face infrastructure for certificate fetching.
-	// Set "insecure" mode so that ValidateExt skips trust-anchor chasing and
-	// succeeds unconditionally.  Routing correctness (not PKI) is what the DV
+	// Force insecure mode so ValidateExt skips trust-anchor chasing and
+	// succeeds unconditionally. Routing correctness (not PKI) is what the DV
 	// integration tests exercise.
-	if cfg.KeyChainUri == "" {
-		cfg.KeyChainUri = "insecure"
-	}
+	// Note: onephase NewConfig() defaults KeyChainUri to "undefined" (not ""),
+	// so we unconditionally override rather than checking for empty string.
+	cfg.KeyChainUri = "insecure"
 
 	sdv, err := NewSimDvRouter(n.clock, n.appEngine, cfg, n.hooks, n.Forwarder)
 	if err != nil {
