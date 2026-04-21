@@ -474,3 +474,223 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// Onephase snippets (named-data/ndnd@main@51774b8)
+// ---------------------------------------------------------------------------
+
+// fibStrategyTreeSnippetOp is injected into fw/table/fib-strategy-tree.go for
+// the onephase build.  At 51774b8 there is no newStrategyTableTree() helper,
+// so we construct the FibStrategyTree struct directly.  Children are a slice
+// (not a map) and there is no walk() helper, so CleanUpFace uses a closure.
+const fibStrategyTreeSnippetOp = `
+// NewFibStrategyTree creates a standalone FibStrategyTree for per-node simulation use.
+func NewFibStrategyTree() *FibStrategyTree {
+	t := new(FibStrategyTree)
+	t.root = new(fibStrategyTreeEntry)
+	t.root.component = enc.Component{}
+	t.root.strategy = defn.DEFAULT_STRATEGY
+	t.root.name = enc.Name{}
+	return t
+}
+
+// NewMulticastStrategyTree creates a standalone FibStrategyTree for per-node
+// simulation use.  At main@51774b8 there is no separate multicast strategy;
+// we return a tree with the default strategy as a best-effort substitute.
+func NewMulticastStrategyTree() *FibStrategyTree {
+	t := new(FibStrategyTree)
+	t.root = new(fibStrategyTreeEntry)
+	t.root.component = enc.Component{}
+	t.root.strategy = defn.DEFAULT_STRATEGY
+	t.root.name = enc.Name{}
+	return t
+}
+
+// CleanUpFace removes all nexthop entries for faceID from the FibStrategyTree.
+func (f *FibStrategyTree) CleanUpFace(faceID uint64) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	var clean func(e *fibStrategyTreeEntry)
+	clean = func(e *fibStrategyTreeEntry) {
+		if e == nil {
+			return
+		}
+		for i, nh := range e.nexthops {
+			if nh.Nexthop == faceID {
+				e.nexthops = append(e.nexthops[:i], e.nexthops[i+1:]...)
+				break
+			}
+		}
+		for _, child := range e.children {
+			clean(child)
+		}
+	}
+	clean(f.root)
+}
+`
+
+// threadSimSnippetOp is injected into fw/fw/thread.go for the onephase build.
+// At main@51774b8 there is no PrefixEgressTable (pet.go doesn't exist) and no
+// MulticastStrategyTable global, so those are omitted.
+const threadSimSnippetOp = `
+// simFib returns the per-node FIB for the goroutine currently executing.
+// Called by transformer-generated code that replaces table.FibStrategyTable.
+func simFib() table.FibStrategy {
+	h := _ndndsim.GetHooks()
+	if h.Fib == nil {
+		return table.FibStrategyTable
+	}
+	return h.Fib.(table.FibStrategy)
+}
+
+// per-node FIB side-table keyed by *Thread to avoid modifying Thread struct.
+var (
+	simFibMu  sync.RWMutex
+	simFibMap = map[*Thread]table.FibStrategy{}
+)
+
+// SetFib records a per-node FIB for simulation; stored in a side-table.
+func (t *Thread) SetFib(fib table.FibStrategy) {
+	simFibMu.Lock()
+	simFibMap[t] = fib
+	simFibMu.Unlock()
+}
+
+// Fib returns the per-node FIB if set, otherwise falls back to the hook/global.
+func (t *Thread) Fib() table.FibStrategy {
+	simFibMu.RLock()
+	fib := simFibMap[t]
+	simFibMu.RUnlock()
+	if fib != nil {
+		return fib
+	}
+	return simFib()
+}
+
+// ProcessPacket synchronously processes a single packet through the forwarding
+// pipeline.  Used by the simulation engine instead of the channel-based Run() loop.
+func (t *Thread) ProcessPacket(pkt *defn.Pkt) {
+	if pkt.L3.Interest != nil {
+		t.processIncomingInterest(pkt)
+	} else if pkt.L3.Data != nil {
+		t.processIncomingData(pkt)
+	}
+}
+
+// RunMaintenance performs one maintenance cycle (dead nonce expiry, PIT/CS update).
+// Called periodically by the simulation clock instead of the tickers in Run().
+func (t *Thread) RunMaintenance() {
+	t.deadNonceList.RemoveExpiredEntries()
+	t.pitCS.Update()
+}
+`
+
+// routerSimSnippetOp is injected into dv/dv/router.go for the onephase build.
+// At main@51774b8, dv.pfx is *table.PrefixTable (no Start/Stop) and the SVS
+// is managed directly via dv.pfxSvs (*ndn_sync.SvsALO).
+// ndn_sync is already imported by the pristine router.go at 51774b8.
+const routerSimSnippetOp = `
+// simNewKeyChain is called by transformer-generated code replacing
+// keychain.NewKeyChain(uri, store).  Returns a pre-built keychain from hooks
+// if available (simulation), otherwise opens the real file-backed keychain.
+func simNewKeyChain(uri string, store ndn.Store) (ndn.KeyChain, error) {
+	h := _ndndsim.GetHooks()
+	if h.KeyChain != nil {
+		return h.KeyChain.(ndn.KeyChain), nil
+	}
+	return keychain.NewKeyChain(uri, store)
+}
+
+// Init initialises the DV router without blocking.
+// Simulation-compatible alternative to Start(): performs all setup but returns
+// immediately; the caller drives heartbeat and deadcheck via the sim clock.
+func (dv *Router) Init() error {
+	log.Info(dv, "Initializing DV router (sim)", "version", utils.NDNdVersion)
+
+	// Reset advert.bootTime with the simulation clock now that hooks are set up.
+	dv.advert = advertModule{
+		dv:       dv,
+		bootTime: max(uint64(_ndndsim.Now().Unix()), 1),
+		seq:      0,
+		objDir:   storage.NewMemoryFifoDir(32),
+	}
+
+	// Start object client.
+	dv.client.Start()
+
+	// Register interest handlers (no configureFace — sim faces are pre-wired).
+	if err := dv.register(); err != nil {
+		return err
+	}
+
+	// Start prefix table sync (SVS-based in main@51774b8).
+	dv.pfxSvs.Start()
+
+	// Add self to the RIB and generate the initial advertisement.
+	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
+	dv.advert.generate()
+
+	// Reset prefix table.
+	dv.pfx.Reset()
+
+	// Start the NFD management thread in a real goroutine (long-lived loop).
+	_ndndsim.Go(func() { dv.nfdc.Start() })
+
+	return nil
+}
+
+// RunHeartbeat sends a sync Interest to all neighbours (simulation tick).
+func (dv *Router) RunHeartbeat() {
+	dv.advert.sendSyncInterest()
+}
+
+// RunDeadcheck checks for dead neighbours and prunes routes (simulation tick).
+func (dv *Router) RunDeadcheck() {
+	dv.checkDeadNeighbors()
+}
+
+// Cleanup tears down the DV router (simulation shutdown).
+func (dv *Router) Cleanup() {
+	dv.pfxSvs.Stop()
+	dv.client.Stop()
+	log.Info(dv, "Cleaned up DV router (sim)")
+}
+
+// Nfdc returns the NFD management thread.
+func (dv *Router) Nfdc() *nfdc.NfdMgmtThread {
+	return dv.nfdc
+}
+
+// PrefixSyncSuppressionStats returns SVS suppression statistics.
+// At main@51774b8 PrefixTable has no SuppressionStats; return empty.
+func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
+	return ndn_sync.SuppressStats{}
+}
+`
+
+// ---------------------------------------------------------------------------
+// Onephase injection functions
+// ---------------------------------------------------------------------------
+
+func applyFibStrategyTreeExtensionsOp(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, fibStrategyTreeSnippetOp)
+	return true
+}
+
+// applyThreadSimExtensionsOp injects onephase sim methods into fw/fw/thread.go.
+// No PET or multicast table (they don't exist at main@51774b8).
+func applyThreadSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, threadSimSnippetOp)
+	// thread.go has sync/atomic but not sync itself.
+	astutil.AddImport(fset, file, "sync")
+	return true
+}
+
+// applyRouterSimExtensionsOp injects onephase Router sim methods into
+// dv/dv/router.go.  ndn_sync is already imported at main@51774b8.
+func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, routerSimSnippetOp)
+	// ndn_sync already imported at 51774b8; addNamedImport is idempotent.
+	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
+	return true
+}

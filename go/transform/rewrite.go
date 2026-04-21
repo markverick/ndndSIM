@@ -41,19 +41,26 @@ ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
 
 // Code-injection rules (eliminate former *_sim.go overlay files).
-ruleInjectFibStrategyTreeExtensions // fw/table/fib-strategy-tree.go
-ruleInjectFibHashTableExtensions    // fw/table/fib-strategy-hashtable.go
-ruleInjectPetConstructor            // fw/table/pet.go
-ruleInjectRibSimFunctions           // fw/table/rib.go  (needs _ndndsim import)
-ruleInjectSvsSimExtensions          // std/sync/svs.go
-ruleInjectThreadSimExtensions       // fw/fw/thread.go
-ruleInjectNfdcSimExtensions         // dv/nfdc/nfdc.go  (needs _ndndsim import)
-ruleInjectPrefixSimExtensions       // dv/dv/prefix.go
-ruleInjectRouterSimExtensions       // dv/dv/router.go
+ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
+ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
+ruleInjectPetConstructor              // fw/table/pet.go
+ruleInjectRibSimFunctions             // fw/table/rib.go  (needs _ndndsim import)
+ruleInjectSvsSimExtensions            // std/sync/svs.go
+ruleInjectThreadSimExtensions         // fw/fw/thread.go (twophase: includes simPet)
+ruleInjectNfdcSimExtensions           // dv/nfdc/nfdc.go  (needs _ndndsim import)
+ruleInjectPrefixSimExtensions         // dv/dv/prefix.go
+ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
+
+// Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
+// no MulticastStrategyTable, different router.go pfxSvs API).
+ruleInjectFibStrategyTreeExtensionsOp // fw/table/fib-strategy-tree.go (onephase)
+ruleInjectThreadSimExtensionsOp       // fw/fw/thread.go (onephase: no simPet/simMulticastFib)
+ruleInjectRouterSimExtensionsOp       // dv/dv/router.go (onephase: pfxSvs.Start)
 )
 
 // targetRewrites returns the full set of package-level rewrite descriptors.
-func targetRewrites(outDir, simModule string) []packageRewrite {
+// phase must be "twophase" (named-data/ndnd@dv2) or "onephase" (named-data/ndnd@main@51774b8).
+func targetRewrites(outDir, simModule, phase string) []packageRewrite {
 pkg := func(rel string, fileRules map[string][]fileRule) packageRewrite {
 return packageRewrite{
 pkgDir:    filepath.Join(outDir, filepath.FromSlash(rel)),
@@ -61,6 +68,37 @@ simModule: simModule,
 fileRules: fileRules,
 }
 }
+
+if phase == "onephase" {
+// Onephase (named-data/ndnd@main@51774b8):
+//   • No fw/table/pet.go                  → skip pet rules
+//   • No dv/dv/prefix.go                  → skip prefix rules
+//   • No table.MulticastStrategyTable     → simpler thread snippet
+//   • fw/table/fib-strategy-tree.go uses direct struct construction
+//   • dv/dv/router.go uses pfxSvs.Start() instead of pfx.Start()
+return []packageRewrite{
+pkg("fw/fw", map[string][]fileRule{
+"thread.go": {ruleInjectThreadSimExtensionsOp},
+}),
+pkg("fw/table", map[string][]fileRule{
+"fib-strategy-tree.go":      {ruleInjectFibStrategyTreeExtensionsOp},
+"fib-strategy-hashtable.go": {ruleInjectFibHashTableExtensions},
+"rib.go":                    {ruleFibGlobalPointerInternal, ruleInjectRibSimFunctions},
+"dead-nonce-list.go":        {ruleDeadNonceListMutex},
+}),
+pkg("dv/dv", map[string][]fileRule{
+"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp},
+}),
+pkg("dv/nfdc", map[string][]fileRule{
+"nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
+}),
+pkg("std/sync", map[string][]fileRule{
+"svs.go": {ruleSimTicker, ruleInjectSvsSimExtensions},
+}),
+}
+}
+
+// Twophase (named-data/ndnd@dv2@76aeb89c) — default.
 return []packageRewrite{
 // fw/fw: inject Thread sim helpers (eliminates thread_sim.go overlay).
 pkg("fw/fw", map[string][]fileRule{
@@ -202,6 +240,20 @@ case ruleInjectRouterSimExtensions:
 // _ndndsim already in router.go from global go→_ndndsim.Go rule.
 // ndn_sync is added inside applyRouterSimExtensions.
 modified = applyRouterSimExtensions(file, fset) || modified
+
+// --- Onephase code-injection rules ---
+
+case ruleInjectFibStrategyTreeExtensionsOp:
+// Onephase: direct struct construction (no newStrategyTableTree helper).
+modified = applyFibStrategyTreeExtensionsOp(file, fset) || modified
+
+case ruleInjectThreadSimExtensionsOp:
+// Onephase: no simPet / simMulticastFib (types don't exist at 51774b8).
+modified = applyThreadSimExtensionsOp(file, fset) || modified
+
+case ruleInjectRouterSimExtensionsOp:
+// Onephase: uses pfxSvs.Start/Stop instead of pfx.Start/Stop.
+modified = applyRouterSimExtensionsOp(file, fset) || modified
 }
 }
 

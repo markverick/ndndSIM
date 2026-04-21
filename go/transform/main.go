@@ -32,10 +32,11 @@ func main() {
 	overlayDir := flag.String("overlay", "", "overlay directory (required)")
 	simModule := flag.String("sim-module", "github.com/named-data/ndndsim", "module path of the ndndsim package")
 	simModuleDir := flag.String("sim-module-dir", "", "local path to the ndndsim module (for replace directive)")
+	phase := flag.String("phase", "twophase", "build phase: twophase or onephase")
 	flag.Parse()
 
 	if *src == "" || *out == "" || *overlayDir == "" {
-		fmt.Fprintln(os.Stderr, "usage: ndnd-transform --src <ndnd> --out <dir> --overlay <dir> [--sim-module <path>] [--sim-module-dir <dir>]")
+		fmt.Fprintln(os.Stderr, "usage: ndnd-transform --src <ndnd> --out <dir> --overlay <dir> [--sim-module <path>] [--sim-module-dir <dir>] [--phase twophase|onephase]")
 		os.Exit(1)
 	}
 
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	// 2. Apply AST rewrites to target packages.
-	rewrites := targetRewrites(*out, *simModule)
+	rewrites := targetRewrites(*out, *simModule, *phase)
 	for _, r := range rewrites {
 		if err := rewritePackage(r); err != nil {
 			fatalf("rewrite %s: %v", r.pkgDir, err)

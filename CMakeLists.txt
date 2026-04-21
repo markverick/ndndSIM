@@ -80,37 +80,54 @@ endif()
 
 message(STATUS "ndndSIM: using Go: ${_GO_BIN}")
 
+# ─── Phase selection ─────────────────────────────────────────────────────
+#
+# NDNDSIM_PHASE selects the ndnd branch and transformer rules:
+#   twophase (default) — named-data/ndnd@dv2 with PET, three-pipeline forwarding
+#   onephase           — named-data/ndnd@main@51774b8, simpler single-pipeline DV
+#
+# Configure two separate cmake caches to build both phases simultaneously:
+#   cmake -B build-twophase -DNDNDSIM_PHASE=twophase ...
+#   cmake -B build-onephase  -DNDNDSIM_PHASE=onephase  ...
+#
+set(NDNDSIM_PHASE "twophase" CACHE STRING "Build phase: twophase or onephase")
+set_property(CACHE NDNDSIM_PHASE PROPERTY STRINGS twophase onephase)
+message(STATUS "ndndSIM: phase = ${NDNDSIM_PHASE}")
+
 # ─── Build the Go shared library ────────────────────────────────────────
 #
 # go/build.sh handles everything:
-#   1. Checks out pristine upstream ndnd (named-data/ndnd@dv2) into a temp worktree
+#   1. Checks out pristine upstream ndnd into a temp worktree
 #   2. Runs the AST transformer + overlay to produce a patched copy
 #   3. Builds the CGo archive and runs the Go sim test suite
 #
-# The archive is written to go/libndndsim.a (same location used by the
-# transformer's own go work sync step), so cmake can reuse a pre-built
-# artifact from a prior run of setup.sh.
+# Archives are named per-phase so two cmake caches can coexist:
+#   go/libndndsim-twophase.a
+#   go/libndndsim-onephase.a
 
 set(NDNDSIM_GO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/go)
-set(NDND_GO_ARCHIVE ${NDNDSIM_GO_DIR}/libndndsim.a)
-set(NDND_GO_HEADER  ${NDNDSIM_GO_DIR}/libndndsim.h)
+set(NDND_GO_ARCHIVE ${NDNDSIM_GO_DIR}/libndndsim-${NDNDSIM_PHASE}.a)
+set(NDND_GO_HEADER  ${NDNDSIM_GO_DIR}/libndndsim-${NDNDSIM_PHASE}.h)
 
 # Track transformer and overlay sources so cmake knows when to rebuild.
 file(GLOB_RECURSE NDND_GO_SOURCES
     "${NDNDSIM_GO_DIR}/transform/*.go"
     "${NDNDSIM_GO_DIR}/overlay/*.go"
+    "${NDNDSIM_GO_DIR}/overlay-op/*.go"
     "${NDNDSIM_GO_DIR}/ndndsim/*.go"
 )
 
 # Custom command: delegate entirely to build.sh.
-# OUT_LIB directs the archive (and its sibling .h) to NDNDSIM_GO_DIR.
+# NDND_PHASE and OUT_LIB are passed explicitly; build.sh derives all other
+# phase-specific paths (TRANSFORMED_DIR, NDND_HASH, NDND_GIT_BRANCH) from them.
 add_custom_command(
     OUTPUT ${NDND_GO_ARCHIVE} ${NDND_GO_HEADER}
     COMMAND ${CMAKE_COMMAND} -E env
         GO=${_GO_BIN}
+        NDND_PHASE=${NDNDSIM_PHASE}
         OUT_LIB=${NDND_GO_ARCHIVE}
         bash ${NDNDSIM_GO_DIR}/build.sh
-    COMMENT "Building NDNd Go simulation library (via transformer)"
+    COMMENT "Building NDNd Go simulation library (phase: ${NDNDSIM_PHASE})"
     DEPENDS ${NDND_GO_SOURCES}
     VERBATIM
 )

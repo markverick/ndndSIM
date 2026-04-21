@@ -4,35 +4,49 @@
 # Build the ndndSIM Go simulation library against a CLEAN upstream ndnd.
 #
 # The script:
-#   1. Checks out a clean copy of ndnd (pristine upstream dv2 by default).
+#   1. Checks out a clean copy of ndnd (pristine upstream by default).
 #      Uses a local git worktree by default, or clones from NDND_GIT_URL
 #      if that variable is set.
 #   2. Runs the AST transformer to patch the copy and apply overlay files.
 #      The overlay/ directory contains sim/ and all sim-specific additions
-#      to ndnd core packages (sourced from our dv2-sim fork).
+#      to ndnd core packages.
+#      For onephase builds, overlay-op/ files are applied on top to override
+#      phase-specific files (e.g. sim/forwarder.go without PET).
 #   3. Generates a go.work that ties together ndndsim, the transformer, and
 #      the transformed ndnd (which now includes sim/).
 #   4. Builds the CGo simulation library and runs sim tests.
 #
 # Environment variables (override defaults):
+#   NDND_PHASE    – twophase (default) or onephase
 #   NDND_SRC      – path to the local ndnd git repository (for worktree mode)
-#   NDND_HASH     – git ref to check out from NDND_SRC (default: 76aeb89c)
+#   NDND_HASH     – git ref to check out from NDND_SRC
 #   NDND_GIT_URL  – if set, clone from this URL instead of using NDND_SRC
-#   NDND_GIT_BRANCH – branch to clone when NDND_GIT_URL is set (default: dv2)
+#   NDND_GIT_BRANCH – branch to clone when NDND_GIT_URL is set
 #   OUT_LIB       – output path for the compiled .a archive
 #   GO            – Go binary to use
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ---------- defaults ----------
+# ---------- phase selection ----------
+NDND_PHASE="${NDND_PHASE:-twophase}"
+
+# ---------- phase-specific defaults ----------
+if [[ "$NDND_PHASE" == "onephase" ]]; then
+    # named-data/ndnd@main at the commit where dv2 branched off.
+    NDND_HASH="${NDND_HASH:-51774b8}"
+    NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-main}"
+else
+    # named-data/ndnd@dv2 — pristine upstream dv2 commit.
+    NDND_HASH="${NDND_HASH:-76aeb89c}"
+    NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-dv2}"
+fi
+
 NDND_SRC="${NDND_SRC:-${SCRIPT_DIR}/../ndnd}"
-# Pristine upstream dv2 commit — all sim-specific changes are in overlay/.
-NDND_HASH="${NDND_HASH:-76aeb89c}"
 NDND_GIT_URL="${NDND_GIT_URL:-}"
-NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-dv2}"
-OUT_LIB="${OUT_LIB:-${SCRIPT_DIR}/libndndsim.a}"
-TRANSFORMED_DIR="${SCRIPT_DIR}/.transformed-ndnd"
+# Phase-specific output paths so two cmake builds can coexist in the same tree.
+OUT_LIB="${OUT_LIB:-${SCRIPT_DIR}/libndndsim-${NDND_PHASE}.a}"
+TRANSFORMED_DIR="${SCRIPT_DIR}/.transformed-ndnd-${NDND_PHASE}"
 
 # Locate Go binary: prefer explicit $GO, then a toolchain downloaded into
 # GOPATH, then a toolchain in /usr/local/go, then whatever is on PATH.
@@ -66,14 +80,25 @@ fi
 #   - The entire sim/ package (CGo library + simulation engine)
 # The transformer applies targeted AST patches (go→_ndndsim.Go, time.Now→
 # _ndndsim.Now, etc.) to the pristine source; overlay files are applied after.
-echo "==> Transforming ndnd source and applying overlay"
+# For onephase builds, overlay-op/ files override phase-specific overlay files.
+echo "==> Transforming ndnd source and applying overlay (phase: ${NDND_PHASE})"
 cd "${SCRIPT_DIR}/transform"
 GOWORK=off ${GO} run . \
+    --phase "$NDND_PHASE" \
     --src  "$WORK_DIR" \
     --out  "$TRANSFORMED_DIR" \
     --overlay "${SCRIPT_DIR}/overlay" \
     --sim-module "github.com/named-data/ndndsim" \
     --sim-module-dir "${SCRIPT_DIR}/ndndsim"
+
+# Apply phase-specific overlay patches on top (if the directory exists).
+# For onephase this overrides sim/forwarder.go (removes PET references).
+if [[ -d "${SCRIPT_DIR}/overlay-op" ]]; then
+    echo "==> Applying overlay-op patches for phase: ${NDND_PHASE}"
+    if [[ "$NDND_PHASE" == "onephase" ]]; then
+        cp -r "${SCRIPT_DIR}/overlay-op/." "$TRANSFORMED_DIR/"
+    fi
+fi
 
 # ---------- step 3: go.work ----------
 echo "==> Generating go.work"
@@ -83,7 +108,7 @@ go 1.24.0
 
 use ./ndndsim
 use ./transform
-use ./.transformed-ndnd
+use ./.transformed-ndnd-${NDND_PHASE}
 EOF
 
 cd "${SCRIPT_DIR}"
