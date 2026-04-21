@@ -172,6 +172,27 @@ func (sd *SimDvRouter) LinkMulticastPrefixes() []enc.Name {
 	return sd.router.LinkMulticastPrefixes()
 }
 
+// MgmtPrefix returns the phase-specific management prefix (/localhost/dv in
+// twophase, /localhost/nlsr in onephase). Use this to build management
+// Interest names rather than hardcoding /localhost/dv.
+func (sd *SimDvRouter) MgmtPrefix() enc.Name {
+	return sd.router.MgmtPrefix()
+}
+
+// PrefixAnnounceCmd returns the command path components after MgmtPrefix for
+// a prefix-announce Interest ("prefix","announce" in twophase; "rib","register"
+// in onephase).
+func (sd *SimDvRouter) PrefixAnnounceCmd() enc.Name {
+	return sd.router.PrefixAnnounceCmd()
+}
+
+// PrefixWithdrawCmd returns the command path components after MgmtPrefix for
+// a prefix-withdraw Interest ("prefix","withdraw" in twophase;
+// "rib","unregister" in onephase).
+func (sd *SimDvRouter) PrefixWithdrawCmd() enc.Name {
+	return sd.router.PrefixWithdrawCmd()
+}
+
 // AnnouncePrefix sends a readvertise Interest to the DV router's management
 // handler, causing it to announce the prefix to all DV neighbors.
 // This replicates what the production forwarder's NlsrReadvertiser does when
@@ -190,13 +211,9 @@ func (sd *SimDvRouter) AnnouncePrefix(name enc.Name, faceId uint64, cost uint64)
 		},
 	}
 
-	cmd := enc.Name{
-		enc.LOCALHOST,
-		enc.NewGenericComponent("dv"),
-		enc.NewGenericComponent("prefix"),
-		enc.NewGenericComponent("announce"),
+	cmd := append(append(sd.MgmtPrefix(), sd.PrefixAnnounceCmd()...),
 		enc.NewGenericBytesComponent(params.Encode().Join()),
-	}
+	)
 
 	signer := sig.NewSha256Signer()
 	interest, err := sd.engine.Spec().MakeInterest(cmd, &ndn.InterestConfig{
@@ -230,13 +247,9 @@ func (sd *SimDvRouter) WithdrawPrefix(name enc.Name, faceId uint64) {
 		},
 	}
 
-	cmd := enc.Name{
-		enc.LOCALHOST,
-		enc.NewGenericComponent("dv"),
-		enc.NewGenericComponent("prefix"),
-		enc.NewGenericComponent("withdraw"),
+	cmd := append(append(sd.MgmtPrefix(), sd.PrefixWithdrawCmd()...),
 		enc.NewGenericBytesComponent(params.Encode().Join()),
-	}
+	)
 
 	signer := sig.NewSha256Signer()
 	interest, err := sd.engine.Spec().MakeInterest(cmd, &ndn.InterestConfig{

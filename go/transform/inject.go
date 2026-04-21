@@ -420,6 +420,33 @@ func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 func (dv *Router) LinkMulticastPrefixes() []enc.Name {
 	return nil
 }
+
+// MgmtPrefix returns the management prefix for this DV router instance.
+// This is phase-specific (/localhost/dv in twophase, /localhost/nlsr in onephase)
+// and must be used when constructing management Interest names.
+func (dv *Router) MgmtPrefix() enc.Name {
+	return dv.config.MgmtPrefix()
+}
+
+// PrefixAnnounceCmd returns the command path components appended after MgmtPrefix
+// to form a prefix-announce management Interest.
+// Twophase: ["prefix", "announce"] → /localhost/dv/prefix/announce/<params>
+func (dv *Router) PrefixAnnounceCmd() enc.Name {
+	return enc.Name{
+		enc.NewGenericComponent("prefix"),
+		enc.NewGenericComponent("announce"),
+	}
+}
+
+// PrefixWithdrawCmd returns the command path components appended after MgmtPrefix
+// to form a prefix-withdraw management Interest.
+// Twophase: ["prefix", "withdraw"] → /localhost/dv/prefix/withdraw/<params>
+func (dv *Router) PrefixWithdrawCmd() enc.Name {
+	return enc.Name{
+		enc.NewGenericComponent("prefix"),
+		enc.NewGenericComponent("withdraw"),
+	}
+}
 `
 
 // ---------------------------------------------------------------------------
@@ -683,6 +710,33 @@ func (dv *Router) LinkMulticastPrefixes() []enc.Name {
 	return []enc.Name{
 		dv.config.AdvertisementSyncPrefix(),
 		dv.pfxSvs.SyncPrefix(),
+	}
+}
+
+// MgmtPrefix returns the management prefix for this DV router instance.
+// This is phase-specific (/localhost/dv in twophase, /localhost/nlsr in onephase)
+// and must be used when constructing management Interest names.
+func (dv *Router) MgmtPrefix() enc.Name {
+	return dv.config.MgmtPrefix()
+}
+
+// PrefixAnnounceCmd returns the command path components appended after MgmtPrefix
+// to form a prefix-announce management Interest.
+// Onephase: ["rib", "register"] → /localhost/nlsr/rib/register/<params>
+func (dv *Router) PrefixAnnounceCmd() enc.Name {
+	return enc.Name{
+		enc.NewGenericComponent("rib"),
+		enc.NewGenericComponent("register"),
+	}
+}
+
+// PrefixWithdrawCmd returns the command path components appended after MgmtPrefix
+// to form a prefix-withdraw management Interest.
+// Onephase: ["rib", "unregister"] → /localhost/nlsr/rib/unregister/<params>
+func (dv *Router) PrefixWithdrawCmd() enc.Name {
+	return enc.Name{
+		enc.NewGenericComponent("rib"),
+		enc.NewGenericComponent("unregister"),
 	}
 }
 `
