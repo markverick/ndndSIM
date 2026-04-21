@@ -81,37 +81,37 @@ endif()
 message(STATUS "ndndSIM: using Go: ${_GO_BIN}")
 
 # ─── Build the Go shared library ────────────────────────────────────────
+#
+# go/build.sh handles everything:
+#   1. Checks out pristine upstream ndnd (named-data/ndnd@dv2) into a temp worktree
+#   2. Runs the AST transformer + overlay to produce a patched copy
+#   3. Builds the CGo archive and runs the Go sim test suite
+#
+# The archive is written to go/libndndsim.a (same location used by the
+# transformer's own go work sync step), so cmake can reuse a pre-built
+# artifact from a prior run of setup.sh.
 
-set(NDND_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ndnd)
-set(NDND_GO_ARCHIVE ${CMAKE_CURRENT_BINARY_DIR}/libndndsim_go.a)
-set(NDND_GO_HEADER  ${CMAKE_CURRENT_BINARY_DIR}/libndndsim_go.h)
+set(NDNDSIM_GO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/go)
+set(NDND_GO_ARCHIVE ${NDNDSIM_GO_DIR}/libndndsim.a)
+set(NDND_GO_HEADER  ${NDNDSIM_GO_DIR}/libndndsim.h)
 
-# Collect all Go source files so cmake rebuilds the archive when any of them change.
-# GLOB_RECURSE is evaluated at configure time; re-run cmake after adding new .go files.
+# Track transformer and overlay sources so cmake knows when to rebuild.
 file(GLOB_RECURSE NDND_GO_SOURCES
-    "${NDND_SRC_DIR}/*.go"
+    "${NDNDSIM_GO_DIR}/transform/*.go"
+    "${NDNDSIM_GO_DIR}/overlay/*.go"
+    "${NDNDSIM_GO_DIR}/ndndsim/*.go"
 )
-# Exclude test files — they are not part of the production binary.
-list(FILTER NDND_GO_SOURCES EXCLUDE REGEX ".*_test\\.go$")
 
-# Custom command to build the Go simulation library as a C archive.
-# This produces libndndsim_go.a and libndndsim_go.h.
+# Custom command: delegate entirely to build.sh.
+# OUT_LIB directs the archive (and its sibling .h) to NDNDSIM_GO_DIR.
 add_custom_command(
     OUTPUT ${NDND_GO_ARCHIVE} ${NDND_GO_HEADER}
     COMMAND ${CMAKE_COMMAND} -E env
-        CGO_ENABLED=1
-        CC=${CMAKE_C_COMPILER}
-        GOPATH=${_GOPATH}
-        GOFLAGS=-mod=mod
-        ${_GO_BIN} build
-            -buildmode=c-archive
-            -o ${NDND_GO_ARCHIVE}
-            ./sim/cmd/
-    WORKING_DIRECTORY ${NDND_SRC_DIR}
-    COMMENT "Building NDNd Go simulation library"
-    DEPENDS
-        ${NDND_GO_SOURCES}
-        ${NDND_SRC_DIR}/sim/ndndsim_sim.h
+        GO=${_GO_BIN}
+        OUT_LIB=${NDND_GO_ARCHIVE}
+        bash ${NDNDSIM_GO_DIR}/build.sh
+    COMMENT "Building NDNd Go simulation library (via transformer)"
+    DEPENDS ${NDND_GO_SOURCES}
     VERBATIM
 )
 
@@ -173,7 +173,7 @@ build_lib(
 )
 
 # Add include path for the generated Go header
-target_include_directories(${libndndSIM} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(${libndndSIM} PRIVATE ${NDNDSIM_GO_DIR})
 
 # The Go archive requires pthreads and other system libraries
 find_package(Threads REQUIRED)

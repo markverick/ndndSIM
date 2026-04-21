@@ -32,8 +32,20 @@ NDND_HASH="${NDND_HASH:-76aeb89c}"
 NDND_GIT_URL="${NDND_GIT_URL:-}"
 NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-dv2}"
 OUT_LIB="${OUT_LIB:-${SCRIPT_DIR}/libndndsim.a}"
-GO="${GO:-/home/stheera/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.24.3.linux-amd64/bin/go}"
 TRANSFORMED_DIR="${SCRIPT_DIR}/.transformed-ndnd"
+
+# Locate Go binary: prefer explicit $GO, then a toolchain downloaded into
+# GOPATH, then a toolchain in /usr/local/go, then whatever is on PATH.
+if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
+    _GOPATH="${GOPATH:-${HOME}/go}"
+    GO="$(ls "${_GOPATH}"/pkg/mod/golang.org/toolchain@v0.0.1-go1.24.*.linux-amd64/bin/go 2>/dev/null | sort -V | tail -1)"
+fi
+if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
+    GO="/usr/local/go/bin/go"
+fi
+if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
+    GO="$(command -v go)"
+fi
 
 # ---------- step 1: clean worktree ----------
 WORK_DIR="$(mktemp -d)"
