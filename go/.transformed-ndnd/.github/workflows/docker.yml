@@ -1,0 +1,20 @@
+name: Docker
+on:
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    # twice a month
+    - cron: '20 8 5,20 * *'
+  workflow_dispatch:
+
+permissions:
+  attestations: write
+  id-token: write
+  packages: write
+
+jobs:
+  ndnd:
+    uses: named-data/actions/.github/workflows/docker-image.yml@v1
+    with:
+      name: ndnd

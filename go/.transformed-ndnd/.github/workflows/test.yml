@@ -1,0 +1,98 @@
+name: test
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          make
+          make examples
+
+      - name: Test
+        run: make test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ndnd
+          path: ndnd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alo-latest
+          path: .bin/alo-latest
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Go imports lint
+        uses: zjkmxy/golang-github-actions@v1.1.3
+        with:
+          run: imports
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    container:
+      image: ghcr.io/named-data/mini-ndn:master
+      options: --sysctl net.ipv6.conf.all.disable_ipv6=0 --privileged
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ndnd
+          path: /usr/bin/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: alo-latest
+          path: /usr/bin/
+
+      - name: Mark ndnd as executable
+        run: |
+          chmod +x /usr/bin/ndnd
+          chmod +x /usr/bin/alo-latest
+
+      - name: Copy ndnd to e2e's bin folder
+        run: |
+          mkdir .bin/
+          cp /usr/bin/ndnd .bin/
+          cp /usr/bin/alo-latest .bin/
+
+      - name: Run e2e tests
+        run: make e2e
+
+      - name: Upload minindn logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minindn-logs
+          path: /tmp/minindn

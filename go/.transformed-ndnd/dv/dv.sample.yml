@@ -1,0 +1,39 @@
+dv:
+  # [required] Global prefix for all DV routers in the network
+  network: /ndn
+  # [required] Unique name for each router in the network
+  router: /ndn/sample
+
+  # [required] Keychain URI for security
+  # - If "insecure" is specified, routing-data security is disabled
+  # - Example: dir:///absolute/path/to/keychain
+  keychain: "dir:///etc/ndn/dv/keys"
+  # [optional] Path to routing trust schema TLV.
+  # If omitted or empty, ndn-dv uses NullSchema.
+  trust_schema: ""
+  # [required] List of full names of all trust anchors
+  trust_anchors:
+    - "/ndn/KEY/%27%C4%B2%2A%9F%7B%81%27/ndn/v=1651246789556"
+
+  # [optional] Keychain URI for prefix insertion verifier.
+  # If omitted or empty, it falls back to "keychain".
+  prefix_insertion_keychain: ""
+  # [optional] List of full names of all prefix insertion trust anchors.
+  # If omitted, it falls back to "trust_anchors".
+  prefix_insertion_trust_anchors: []
+  # [optional] Path to prefix insertion trust schema TLV.
+  # If omitted or empty, ndn-dv uses NullSchema.
+  prefix_insertion_trust_schema: ""
+
+  # [optional] List of permanent neighbors
+  # Example with all options:
+  #   - uri: udp4://suns.cs.ucla.edu:6363   # required
+  #     mtu: 1420                           # optional
+  neighbors: []
+
+  # [optional] Period of Advertisement Sync Interests (ms)
+  advertise_interval: 5000
+  # [optional] Period of Prefix Sync Interests (ms)
+  prefix_sync_interval: 5000
+  # [optional] Time after which a neighbor is considered dead (ms)
+  router_dead_interval: 30000

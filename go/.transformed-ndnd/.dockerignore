@@ -1,0 +1,29 @@
+/ndnd
+/ndnd.exe
+/gondn_tlv_gen
+/gondn_tlv_gen.exe
+coverage.out
+/db-*/
+
+# Go wasm files
+wasm_exec.js
+
+# Compiler folders
+.vscode
+.idea
+.gocache
+.toolchains/
+.bin/
+
+# Temporary
+.env
+_build
+*~
+*.sw*
+*.DS_Store
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+/temp/
+*.wasm
