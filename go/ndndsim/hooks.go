@@ -140,24 +140,17 @@ func (c CancelHandle) Stop() bool {
 	return true
 }
 
-// Go dispatches f as a short-lived unit of work.  When a GoFunc hook is set
-// (simulation mode), f is scheduled as a deterministic clock event at delay=0
-// so that all DV work items (updateFib, postUpdateRib, dataHandler, …) run in
-// strict sim-clock order through DeterministicClock.Advance.  In production
-// (GoFunc == nil) a real goroutine is spawned instead.
+// Go launches f as a real goroutine, propagating the current node's hooks
+// into that goroutine so that ndndsim.Now/AfterFunc/IsSynchronous work
+// correctly inside f.
 //
-// Long-lived blocking loops (SvSync.main, SvsALO.run, nfdc.Start) must NOT
-// use Go(): use GoLong() for those so they always get real goroutines.
+// Note: this always uses a real goroutine (not GoFunc / clock scheduling).
+// Routing Go() through GoFunc=clock.Schedule would deadlock Advance() for any
+// callback that performs a blocking operation (channel receive, mutex wait,
+// etc.).  Use GoLong() for long-lived blocking loops; use Go() for all other
+// goroutine spawns — both use real goroutines for safety.
 func Go(f func()) {
 	h := GetHooks()
-	if h.GoFunc != nil {
-		// Simulation path: route through the deterministic-clock scheduler.
-		// The GoFunc closure (makeGoFunc in overlay/sim/dv.go) already wraps
-		// the callback with BindNode/UnbindNode so hooks are visible inside f.
-		h.GoFunc(f)
-		return
-	}
-	// Production path: real goroutine with hook propagation.
 	go func() {
 		id := goroutineID()
 		hooksMu.Lock()
