@@ -192,6 +192,12 @@ func Go(f func()) {
 		return
 	}
 	// Fallback (should not happen — productionHooks always sets GoFunc).
+	// In synchronous mode this means BindNode was not active when Go() was
+	// called, which is a sim correctness bug (would spawn a real goroutine).
+	if h.Synchronous {
+		panic("ndndsim: Go() reached fallback in synchronous (DES) mode — " +
+			"BindNode was not active; check all CGo/clock-callback entry points")
+	}
 	go func() {
 		BindNode(h)
 		defer UnbindNode()
@@ -214,8 +220,16 @@ func Sleep(d time.Duration) {
 // Use this for long-lived blocking loops (SvSync.main, SvsALO.run, nfdc.Start)
 // that must not be scheduled as clock events because they never return until
 // explicitly stopped via a channel signal.
+//
+// In synchronous (DES) mode GoLong panics: any call indicates a missed sim
+// guard and would introduce a real goroutine that races with clock.Advance,
+// breaking determinism. This enforces zero-tolerance for goroutines in DES.
 func GoLong(f func()) {
 	h := GetHooks()
+	if h.Synchronous {
+		panic("ndndsim: GoLong called in synchronous (DES) mode — " +
+			"all long-lived loops must be guarded by IsSynchronous() checks")
+	}
 	go func() {
 		BindNode(h)
 		defer UnbindNode()
