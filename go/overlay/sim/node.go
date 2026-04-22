@@ -71,10 +71,19 @@ func NewNode(id uint32, clock Clock) *Node {
 	// clock is propagated through node hooks (_ndndsim.BindNode) instead.
 	// (Historical note: this was needed in the dv2-sim fork, no longer needed.)
 
-	// Create per-node hooks.  Scheduling defaults to real goroutines;
-	// DV-specific overrides are applied later in StartDv / NewSimDvRouter.
+	// Create per-node hooks.  GoFunc uses clock.Schedule(0,...) so that all
+	// short-lived goroutine spawns (go sendSyncInterest, go announcePrefix_, …)
+	// become deterministic 0-delay clock events instead of real goroutines.
+	// Long-lived blocking loops use GoLong() and are excluded from GoFunc.
 	hooks := &_ndndsim.NodeHooks{
-		GoFunc: func(f func()) { go f() },
+		GoFunc: func(f func()) {
+			h := hooks // capture — set below before any goroutine runs
+			clock.Schedule(0, func() {
+				_ndndsim.BindNode(h)
+				defer _ndndsim.UnbindNode()
+				f()
+			})
+		},
 		AfterFunc: func(d time.Duration, f func()) func() {
 			t := time.AfterFunc(d, f)
 			return func() { t.Stop() }

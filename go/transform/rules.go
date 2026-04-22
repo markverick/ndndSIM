@@ -49,6 +49,7 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 
 		// time.Now()       → _ndndsim.Now()
 		// time.AfterFunc()  → _ndndsim.AfterFunc()
+		// time.Sleep(d)    → _ndndsim.Sleep(d)
 		// time.Since(t)    → _ndndsim.Now().Sub(t)
 		//   time.Since(t) is sugar for time.Now().Sub(t); replacing it here
 		//   ensures both the Now() call and the subtraction use the sim clock.
@@ -62,7 +63,7 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 				break
 			}
 			switch sel.Sel.Name {
-			case "Now", "AfterFunc":
+			case "Now", "AfterFunc", "Sleep":
 				sel.X = ast.NewIdent("_ndndsim")
 				modified = true
 				ndndsimUsed = true

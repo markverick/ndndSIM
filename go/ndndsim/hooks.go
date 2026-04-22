@@ -5,6 +5,7 @@
 //   go f()              →  ndndsim.Go(func() { f() })
 //   time.Now()          →  ndndsim.Now()
 //   time.AfterFunc(d,f) →  ndndsim.AfterFunc(d, f)
+//   time.Sleep(d)       →  ndndsim.Sleep(d)
 //   table.FibStrategyTable → simFib()  (package-local, from overlay)
 //   table.Pet              → simPet()  (package-local, from overlay)
 //
@@ -140,17 +141,25 @@ func (c CancelHandle) Stop() bool {
 	return true
 }
 
-// Go launches f as a real goroutine, propagating the current node's hooks
-// into that goroutine so that ndndsim.Now/AfterFunc/IsSynchronous work
-// correctly inside f.
+// Go dispatches f asynchronously, propagating the current node's hooks.
 //
-// Note: this always uses a real goroutine (not GoFunc / clock scheduling).
-// Routing Go() through GoFunc=clock.Schedule would deadlock Advance() for any
-// callback that performs a blocking operation (channel receive, mutex wait,
-// etc.).  Use GoLong() for long-lived blocking loops; use Go() for all other
-// goroutine spawns — both use real goroutines for safety.
+// In simulation (GoFunc = clock.Schedule) short-lived work runs as a
+// 0-delay clock event — no goroutine is spawned and execution stays
+// deterministic.  Outside simulation GoFunc defaults to "go f()" so the
+// production code path is unchanged.
+//
+// Use GoLong() for long-lived blocking loops (SvSync.main, SvsALO.run,
+// nfdc.Start) that must always run in a real goroutine because they never
+// return until explicitly stopped.
 func Go(f func()) {
 	h := GetHooks()
+	if h.GoFunc != nil {
+		// GoFunc already captures hooks at the call site (see dv.go makeGoFunc
+		// and node.go GoFunc).  Pass f directly; hook binding is GoFunc's job.
+		h.GoFunc(f)
+		return
+	}
+	// Fallback (should not happen — productionHooks always sets GoFunc).
 	go func() {
 		id := goroutineID()
 		hooksMu.Lock()
@@ -163,6 +172,17 @@ func Go(f func()) {
 		}()
 		f()
 	}()
+}
+
+// Sleep pauses for d.  In simulation (IsSynchronous) it is a no-op:
+// real-wall sleeps are meaningless in a deterministic sim clock and would
+// stall Advance() if called from a clock-event goroutine.  Outside
+// simulation it calls time.Sleep(d) as normal.
+func Sleep(d time.Duration) {
+	if IsSynchronous() {
+		return
+	}
+	time.Sleep(d)
 }
 
 // GoLong spawns f as a real goroutine regardless of the GoFunc hook.
