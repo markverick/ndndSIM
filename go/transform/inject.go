@@ -129,15 +129,17 @@ func (s *SvSync) SuppressionStats() SuppressStats {
 	return SuppressStats{}
 }
 
-// simTicker implements the same channel-based interface as *time.Ticker but
-// schedules ticks via the per-goroutine AfterFunc hook so they follow the
-// simulation clock.
+// simTicker implements the same interface as *time.Ticker but schedules ticks
+// via the per-goroutine AfterFunc hook so they follow the simulation clock.
+// When callback is non-nil, ticks invoke it directly instead of sending to C,
+// eliminating the need for a goroutine to read the channel.
 type simTicker struct {
 	C         chan time.Time
 	period    time.Duration
 	afterFunc func(time.Duration, func()) func()
 	cancel    func()
 	stopped   atomic.Bool
+	callback  func() // direct tick handler in sim mode (no channel read needed)
 }
 
 // newSimTicker creates a simTicker that fires every d using the AfterFunc hook
@@ -166,9 +168,14 @@ func (t *simTicker) schedule(d time.Duration) {
 		if t.stopped.Load() {
 			return
 		}
-		select {
-		case t.C <- time.Time{}:
-		default:
+		if t.callback != nil {
+			// Sim mode: invoke handler directly — no goroutine, no channel.
+			t.callback()
+		} else {
+			select {
+			case t.C <- time.Time{}:
+			default:
+			}
 		}
 		t.schedule(t.period)
 	})
@@ -190,6 +197,46 @@ func (t *simTicker) Stop() {
 	if t.cancel != nil {
 		t.cancel()
 		t.cancel = nil
+	}
+}
+
+// simStart replaces main() in simulation mode.
+// Called by transformer-generated code: if _ndndsim.IsSynchronous() { s.simStart() }
+// Sets up the periodic timer and initial sync interest without running a goroutine.
+func (s *SvSync) simStart() {
+	s.running.Store(true)
+
+	// Register face-up callback (matches main() behaviour).
+	s.faceCancel = s.o.Client.Engine().Face().OnUp(func() {
+		_ndndsim.AfterFunc(100*time.Millisecond, s.sendSyncInterest)
+	})
+
+	// Send initial Sync Interest (matches main() behaviour).
+	if s.o.Passive {
+		_ndndsim.Go(func() { s.loadPassiveWires() })
+	} else {
+		_ndndsim.Go(func() { s.sendSyncInterest() })
+	}
+
+	// Register timerExpired as the direct tick callback so the simTicker
+	// fires it via AfterFunc without needing a goroutine to read ticker.C.
+	s.ticker.callback = s.timerExpired
+}
+
+// simRecvSv processes an incoming state vector directly, bypassing the recvSv
+// channel.  Called by transformer-generated code replacing s.recvSv <- sv.
+func (s *SvSync) simRecvSv(sv svSyncRecvSvArgs) {
+	s.onReceiveStateVector(sv)
+}
+
+// simStop tears down the SvSync instance in simulation mode.
+// Called by transformer-generated code replacing s.stop <- struct{}{} in Stop().
+func (s *SvSync) simStop() {
+	s.o.Client.Engine().DetachHandler(s.prefix)
+	s.running.Store(false)
+	s.ticker.Stop()
+	if s.faceCancel != nil {
+		s.faceCancel()
 	}
 }
 `
@@ -375,10 +422,9 @@ func (dv *Router) Init() error {
 	// Initialise prefix egress state.
 	dv.pfx.Reset()
 
-	// Start the NFD management thread in a real goroutine (long-lived loop).
-	// GoLong bypasses the GoFunc/clock-schedule hook so the blocking select
-	// loop inside nfdc.Start() does not deadlock DeterministicClock.Advance.
-	_ndndsim.GoLong(func() { dv.nfdc.Start() })
+	// nfdc.Start() is NOT launched in simulation: all management commands
+	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
+	// Starting the goroutine would violate the zero-goroutine constraint.
 
 	return nil
 }
@@ -399,10 +445,9 @@ func (dv *Router) Cleanup() {
 		dv.pfx.Stop()
 	}
 	dv.client.Stop()
-	// Stop the nfdc goroutine spawned in Init/Start so it does not leak
-	// into the next test. nfdc.Stop() sends on its stop channel and the
-	// goroutine exits cleanly.
-	dv.nfdc.Stop()
+	// nfdc.Stop() is intentionally omitted: nfdc.Start() was never called in
+	// sim mode, so there is no goroutine to signal (and sending to the stop
+	// channel would deadlock).
 	log.Info(dv, "Cleaned up DV router (sim)")
 }
 
@@ -484,6 +529,167 @@ func applyRibSimExtensions(file *ast.File, fset *token.FileSet) bool {
 func applySvsSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, svsSimSnippet)
 	return true
+}
+
+// svsAloSimSnippet is injected into std/sync/svs_alo.go.
+// Provides direct-delivery helpers that replace the channel-based run() loop
+// in simulation mode.  All types (SvsALO, SvsPub, enc.Name) are already
+// visible in the package; no extra imports required.
+const svsAloSimSnippet = `
+// simQueuePub delivers pub directly to its subscribers, bypassing the outpipe
+// channel.  Called by transformer-generated code replacing s.outpipe <- pub.
+func (s *SvsALO) simQueuePub(pub SvsPub) {
+	for _, subscription := range pub.subcribers {
+		subscription(pub)
+	}
+}
+
+// simQueueError delivers err directly to the error callback, bypassing the
+// errpipe channel.  Called by transformer-generated code.
+func (s *SvsALO) simQueueError(err error) {
+	if s.onError != nil {
+		s.onError(err)
+	}
+}
+
+// simQueuePubl delivers name directly to the publisher callback, bypassing the
+// publpipe channel.  Called by transformer-generated code replacing
+// s.publpipe <- name.
+func (s *SvsALO) simQueuePubl(name enc.Name) {
+	if s.onPublisher != nil {
+		s.onPublisher(name)
+	}
+}
+
+// simStop is a no-op in simulation mode: run() is never started so there is
+// no goroutine to signal.  Called by transformer-generated code replacing
+// s.stop <- struct{}{} in Stop().
+func (s *SvsALO) simStop() {}
+`
+
+func applySvsAloSimExtensions(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, svsAloSimSnippet)
+	return true
+}
+
+// applySvsChannels transforms channel operations in std/sync/svs.go:
+//   - s.recvSv <- sv  →  s.simRecvSv(sv)
+//   - s.stop <- struct{}{}  →  s.simStop()
+func applySvsChannels(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		send, ok := c.Node().(*ast.SendStmt)
+		if !ok {
+			return true
+		}
+		sel, ok := send.Chan.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "recvSv":
+			// s.recvSv <- sv  →  s.simRecvSv(sv)
+			c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+				Fun:  &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simRecvSv")},
+				Args: []ast.Expr{send.Value},
+			}})
+			modified = true
+		case "stop":
+			// s.stop <- struct{}{}  →  s.simStop()
+			c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simStop")},
+			}})
+			modified = true
+		}
+		return true
+	}, nil)
+	return modified
+}
+
+// applySvsAloChannels transforms channel operations in std/sync/svs_alo.go:
+//   - s.stop <- struct{}{}  →  s.simStop()
+//   - s.publpipe <- name    →  s.simQueuePubl(name)
+func applySvsAloChannels(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		send, ok := c.Node().(*ast.SendStmt)
+		if !ok {
+			return true
+		}
+		sel, ok := send.Chan.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "stop":
+			// s.stop <- struct{}{}  →  s.simStop()
+			c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simStop")},
+			}})
+			modified = true
+		case "publpipe":
+			// s.publpipe <- name  →  s.simQueuePubl(name)
+			c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+				Fun:  &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simQueuePubl")},
+				Args: []ast.Expr{send.Value},
+			}})
+			modified = true
+		}
+		return true
+	}, nil)
+	return modified
+}
+
+// applySvsAloDataChannels transforms channel operations in std/sync/svs_alo_data.go:
+//   - s.outpipe <- pub                          →  s.simQueuePub(pub)
+//   - select { case s.errpipe <- err: default:}  →  s.simQueueError(err)
+func applySvsAloDataChannels(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		switch n := c.Node().(type) {
+		case *ast.SendStmt:
+			sel, ok := n.Chan.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "outpipe" {
+				return true
+			}
+			// s.outpipe <- pub  →  s.simQueuePub(pub)
+			c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+				Fun:  &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simQueuePub")},
+				Args: []ast.Expr{n.Value},
+			}})
+			modified = true
+
+		case *ast.SelectStmt:
+			// Detect: select { case s.errpipe <- err: ... default: }
+			// Replace the whole SelectStmt with s.simQueueError(err).
+			if n.Body == nil || len(n.Body.List) == 0 {
+				return true
+			}
+			for _, clause := range n.Body.List {
+				cc, ok := clause.(*ast.CommClause)
+				if !ok || cc.Comm == nil {
+					continue
+				}
+				send, ok := cc.Comm.(*ast.SendStmt)
+				if !ok {
+					continue
+				}
+				sel, ok := send.Chan.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "errpipe" {
+					continue
+				}
+				// Found the errpipe select — replace with direct delivery.
+				c.Replace(&ast.ExprStmt{X: &ast.CallExpr{
+					Fun:  &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simQueueError")},
+					Args: []ast.Expr{send.Value},
+				}})
+				modified = true
+				return false
+			}
+		}
+		return true
+	}, nil)
+	return modified
 }
 
 // applyThreadSimExtensions injects simFib/simPet/simMulticastFib + Thread
@@ -674,10 +880,9 @@ func (dv *Router) Init() error {
 	// Reset prefix table.
 	dv.pfx.Reset()
 
-	// Start the NFD management thread in a real goroutine (long-lived loop).
-	// GoLong bypasses the GoFunc/clock-schedule hook so the blocking select
-	// loop inside nfdc.Start() does not deadlock DeterministicClock.Advance.
-	_ndndsim.GoLong(func() { dv.nfdc.Start() })
+	// nfdc.Start() is NOT launched in simulation: all management commands
+	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
+	// Starting the goroutine would violate the zero-goroutine constraint.
 
 	return nil
 }
@@ -696,10 +901,9 @@ func (dv *Router) RunDeadcheck() {
 func (dv *Router) Cleanup() {
 	dv.pfxSvs.Stop()
 	dv.client.Stop()
-	// Stop the nfdc goroutine spawned in Init() so it does not leak
-	// into the next test. nfdc.Stop() sends on its stop channel and the
-	// goroutine exits cleanly.
-	dv.nfdc.Stop()
+	// nfdc.Stop() is intentionally omitted: nfdc.Start() was never called in
+	// sim mode, so there is no goroutine to signal (and sending to the stop
+	// channel would deadlock).
 	log.Info(dv, "Cleaned up DV router (sim)")
 }
 

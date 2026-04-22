@@ -120,23 +120,26 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 // ---------------------------------------------------------------------------
 
 // isLongLivedCall returns true when call is a known long-lived blocking-loop
-// method that must run in a real goroutine rather than a clock-scheduled event.
-// These methods never return until explicitly stopped (via a channel/stop
-// signal) so they cannot be executed inside DeterministicClock.Advance().
+// that cannot be routed through GoFunc=clock.Schedule.
+// Note: "main" (SvSync) and "run" (SvsALO) are handled separately in
+// makeGoCall — they generate if/else that skips the loop entirely in sim mode.
 func isLongLivedCall(call *ast.CallExpr) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	switch sel.Sel.Name {
-	case "main", "run":
-		// SvSync.main() and SvsALO.run() are blocking event-loop goroutines.
-		return true
-	}
-	return false
+	return false // all cases now handled in makeGoCall or inject.go
 }
 
-func makeGoCall(call *ast.CallExpr) *ast.ExprStmt {
+// makeGoCall returns the statement to replace a GoStmt.
+//
+//   - For short-lived goroutines: _ndndsim.Go(func() { … })
+//     Go() routes through GoFunc=clock.Schedule in sim, so no real goroutine.
+//
+//   - For s.main() (SvSync blocking loop):
+//     if _ndndsim.IsSynchronous() { s.simStart() } else { go s.main() }
+//     simStart() sets up timer/state without running a goroutine.
+//
+//   - For s.run() (SvsALO blocking loop):
+//     if !_ndndsim.IsSynchronous() { go s.run() }
+//     In sim, delivery is handled by simQueuePub/simQueueError/simQueuePubl.
+func makeGoCall(call *ast.CallExpr) ast.Node {
 	var funcLit *ast.FuncLit
 
 	// Unwrap IIFE with no parameters: go func() { body }() → _ndndsim.Go(func() { body })
@@ -150,28 +153,64 @@ func makeGoCall(call *ast.CallExpr) *ast.ExprStmt {
 		}
 	}
 
-	// Long-lived blocking loops must use GoLong so they bypass the
-	// GoFunc=clock.Schedule hook and always run in a real goroutine.
-	// Check both the original call and (for IIFEs) the first statement
-	// inside the unwrapped function literal body.
-	goFuncName := "Go"
-	if isLongLivedCall(call) {
-		goFuncName = "GoLong"
-	} else if funcLit != nil && len(funcLit.Body.List) == 1 {
+	// Determine the "inner" call — either the original call (non-IIFE) or
+	// the single statement inside the unwrapped function literal (IIFE).
+	innerCall := call
+	if funcLit != nil && len(funcLit.Body.List) == 1 {
 		if es, ok := funcLit.Body.List[0].(*ast.ExprStmt); ok {
-			if inner, ok := es.X.(*ast.CallExpr); ok && isLongLivedCall(inner) {
-				goFuncName = "GoLong"
+			if ic, ok := es.X.(*ast.CallExpr); ok {
+				innerCall = ic
 			}
 		}
 	}
 
+	// Detect long-lived blocking loops by method name.
+	if sel, ok := innerCall.Fun.(*ast.SelectorExpr); ok {
+		switch sel.Sel.Name {
+		case "main":
+			// SvSync.main() — in sim, call simStart() instead of running the loop.
+			// if _ndndsim.IsSynchronous() { recv.simStart() } else { go recv.main() }
+			return &ast.IfStmt{
+				Cond: isSynchronousCallExpr(),
+				Body: &ast.BlockStmt{List: []ast.Stmt{
+					&ast.ExprStmt{X: &ast.CallExpr{
+						Fun: &ast.SelectorExpr{X: sel.X, Sel: ast.NewIdent("simStart")},
+					}},
+				}},
+				Else: &ast.BlockStmt{List: []ast.Stmt{
+					&ast.GoStmt{Call: innerCall},
+				}},
+			}
+		case "run":
+			// SvsALO.run() — in sim, delivery is done via simQueue* direct calls.
+			// if !_ndndsim.IsSynchronous() { go recv.run() }
+			return &ast.IfStmt{
+				Cond: &ast.UnaryExpr{Op: token.NOT, X: isSynchronousCallExpr()},
+				Body: &ast.BlockStmt{List: []ast.Stmt{
+					&ast.GoStmt{Call: innerCall},
+				}},
+			}
+		}
+	}
+
+	// Short-lived goroutine: route through GoFunc (clock.Schedule in sim, go f() in prod).
 	return &ast.ExprStmt{
 		X: &ast.CallExpr{
 			Fun: &ast.SelectorExpr{
 				X:   ast.NewIdent("_ndndsim"),
-				Sel: ast.NewIdent(goFuncName),
+				Sel: ast.NewIdent("Go"),
 			},
 			Args: []ast.Expr{funcLit},
+		},
+	}
+}
+
+// isSynchronousCallExpr returns the AST for _ndndsim.IsSynchronous().
+func isSynchronousCallExpr() *ast.CallExpr {
+	return &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X:   ast.NewIdent("_ndndsim"),
+			Sel: ast.NewIdent("IsSynchronous"),
 		},
 	}
 }

@@ -46,6 +46,10 @@ ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
 ruleInjectPetConstructor              // fw/table/pet.go
 ruleInjectRibSimFunctions             // fw/table/rib.go  (needs _ndndsim import)
 ruleInjectSvsSimExtensions            // std/sync/svs.go
+ruleInjectSvsAloSimExtensions         // std/sync/svs_alo.go
+ruleSvsChannels                       // std/sync/svs.go: recvSv/stop sends → sim methods
+ruleSvsAloChannels                    // std/sync/svs_alo.go: stop/publpipe sends → sim methods
+ruleInjectSvsAloDataChannels          // std/sync/svs_alo_data.go: outpipe/errpipe sends
 ruleInjectThreadSimExtensions         // fw/fw/thread.go (twophase: includes simPet)
 ruleInjectNfdcSimExtensions           // dv/nfdc/nfdc.go  (needs _ndndsim import)
 ruleInjectPrefixSimExtensions         // dv/dv/prefix.go
@@ -97,7 +101,9 @@ pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
 }),
 pkg("std/sync", map[string][]fileRule{
-"svs.go": {ruleSimTicker, ruleInjectSvsSimExtensions},
+"svs.go":          {ruleSimTicker, ruleInjectSvsSimExtensions, ruleSvsChannels},
+"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
+"svs_alo_data.go": {ruleInjectSvsAloDataChannels},
 }),
 }
 }
@@ -131,10 +137,11 @@ pkg("dv/dv", map[string][]fileRule{
 pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
 }),
-// std/sync: inject simTicker and SuppressStats (eliminates ticker_sim.go
-// and suppress_sim.go overlays).
-pkg("std/sync", map[string][]fileRule{
-"svs.go": {ruleSimTicker, ruleInjectSvsSimExtensions},
+// std/sync: eliminate goroutines via direct-delivery sim helpers.
+	pkg("std/sync", map[string][]fileRule{
+		"svs.go":          {ruleSimTicker, ruleInjectSvsSimExtensions, ruleSvsChannels},
+		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
+		"svs_alo_data.go": {ruleInjectSvsAloDataChannels},
 }),
 }
 }
@@ -227,7 +234,17 @@ ndndsimUsed = true
 case ruleInjectSvsSimExtensions:
 // _ndndsim, time, sync/atomic already imported in svs.go.
 modified = applySvsSimExtensions(file, fset) || modified
+		case ruleInjectSvsAloSimExtensions:
+			modified = applySvsAloSimExtensions(file, fset) || modified
 
+		case ruleSvsChannels:
+			modified = applySvsChannels(file) || modified
+
+		case ruleSvsAloChannels:
+			modified = applySvsAloChannels(file) || modified
+
+		case ruleInjectSvsAloDataChannels:
+			modified = applySvsAloDataChannels(file) || modified
 case ruleInjectThreadSimExtensions:
 // _ndndsim, defn, table already in thread.go; sync added inside.
 modified = applyThreadSimExtensions(file, fset) || modified
