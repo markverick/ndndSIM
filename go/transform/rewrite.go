@@ -61,6 +61,7 @@ ruleInjectFibStrategyTreeExtensionsOp // fw/table/fib-strategy-tree.go (onephase
 ruleInjectThreadSimExtensionsOp       // fw/fw/thread.go (onephase: no simPet/simMulticastFib)
 ruleInjectRouterSimExtensionsOp       // dv/dv/router.go (onephase: pfxSvs.Start)
 	ruleSnapshotDisableInSim              // std/sync/svs_alo_data.go: skip onUpdate in sim
+)
 
 // targetRewrites returns the full set of package-level rewrite descriptors.
 // phase must be "twophase" (named-data/ndnd@dv2) or "onephase" (named-data/ndnd@main@51774b8).
@@ -245,15 +246,18 @@ modified = applySvsSimExtensions(file, fset) || modified
 
 		case ruleInjectSvsAloDataChannels:
 			modified = applySvsAloDataChannels(file) || modified
-			case ruleSnapshotDisableInSim:
-				// Wrap s.opts.Snapshot.onUpdate(...) with if !_ndndsim.IsSynchronous()
-				// to disable the snapshot strategy in sim mode.  Without this,
-				// SnapshotNodeLatest.onUpdate sets SnapBlock=1 on every consumeCheck
-				// call when Known==0, blocking normal sequential fetching forever.
-				if applySnapshotDisableInSim(file) {
-					modified = true
-					ndndsimUsed = true
-				}case ruleInjectThreadSimExtensions:
+
+		case ruleSnapshotDisableInSim:
+			// Wrap s.opts.Snapshot.onUpdate(...) with if !_ndndsim.IsSynchronous()
+			// to disable the snapshot strategy in sim mode.  Without this,
+			// SnapshotNodeLatest.onUpdate sets SnapBlock=1 on every consumeCheck
+			// call when Known==0, blocking normal sequential fetching forever.
+			if applySnapshotDisableInSim(file) {
+				modified = true
+				ndndsimUsed = true
+			}
+
+		case ruleInjectThreadSimExtensions:
 // _ndndsim, defn, table already in thread.go; sync added inside.
 modified = applyThreadSimExtensions(file, fset) || modified
 
