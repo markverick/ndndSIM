@@ -650,6 +650,50 @@ func applySvsAloChannels(file *ast.File) bool {
 	return modified
 }
 
+// applySnapshotDisableInSim wraps the call s.opts.Snapshot.onUpdate(s.state, node)
+// inside consumeCheck with:
+//
+//	if !_ndndsim.IsSynchronous() { s.opts.Snapshot.onUpdate(s.state, node) }
+//
+// Without this guard, SnapshotNodeLatest.onUpdate sets SnapBlock=1 whenever
+// Known==0, preventing normal sequential PFS data fetching in the sim.  The
+// snapshot never arrives (no snapshot was produced), so SnapBlock stays 1
+// forever and consumeCheck can never make progress.
+func applySnapshotDisableInSim(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		stmt, ok := c.Node().(*ast.ExprStmt)
+		if !ok {
+			return true
+		}
+		call, ok := stmt.X.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		// Match s.opts.Snapshot.onUpdate(...)
+		outer, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || outer.Sel.Name != "onUpdate" {
+			return true
+		}
+		// Wrap with: if !_ndndsim.IsSynchronous() { <original> }
+		c.Replace(&ast.IfStmt{
+			Cond: &ast.UnaryExpr{
+				Op: token.NOT,
+				X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent("_ndndsim"),
+						Sel: ast.NewIdent("IsSynchronous"),
+					},
+				},
+			},
+			Body: &ast.BlockStmt{List: []ast.Stmt{stmt}},
+		})
+		modified = true
+		return false
+	}, nil)
+	return modified
+}
+
 // applySvsAloDataChannels transforms channel operations in std/sync/svs_alo_data.go:
 //   - s.outpipe <- pub                          →  s.simQueuePub(pub)
 //   - select { case s.errpipe <- err: default:}  →  s.simQueueError(err)
