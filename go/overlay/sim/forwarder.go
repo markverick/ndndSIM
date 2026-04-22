@@ -1,9 +1,6 @@
 package sim
 
 import (
-	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,25 +182,11 @@ func (fwd *SimForwarder) GetFace(id uint64) *DispatchFace {
 
 // --- RIB/FIB management ---
 
-// fwdGoroutineID returns the numeric ID of the current goroutine.
-// Used by withNodeFib to detect re-entrant calls from the same goroutine.
-func fwdGoroutineID() int64 {
-	var buf [32]byte
-	n := runtime.Stack(buf[:], false)
-	s := strings.TrimPrefix(string(buf[:n]), "goroutine ")
-	i := strings.IndexByte(s, ' ')
-	if i < 0 {
-		return 0
-	}
-	id, _ := strconv.ParseInt(s[:i], 10, 64)
-	return id
-}
-
 // lockNode acquires the per-node forwarding lock.
 // Returns true if this call acquired the lock (caller must call unlockNode).
 // Returns false if the current goroutine already holds the lock (re-entrant).
 func (fwd *SimForwarder) lockNode() bool {
-	id := fwdGoroutineID()
+	id := _ndndsim.GoroutineID()
 	if atomic.LoadInt64(&fwd.nodeHolder) == id {
 		return false
 	}
@@ -239,8 +222,11 @@ func (fwd *SimForwarder) withNodeFib(f func()) {
 		f()
 		return
 	}
-	_ndndsim.BindNode(fwd.hooks)
-	defer _ndndsim.UnbindNode()
+	// SwapNode atomically replaces the current binding and returns the previous
+	// one; RestoreNode reinstates it on exit — correctly handling the case where
+	// the goroutine was already bound to a different node (e.g. a GoLong loop).
+	prev := _ndndsim.SwapNode(fwd.hooks)
+	defer _ndndsim.RestoreNode(prev)
 	f()
 }
 

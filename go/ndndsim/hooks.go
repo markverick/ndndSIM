@@ -109,6 +109,13 @@ func GetHooks() *NodeHooks {
 	return h
 }
 
+// GoroutineID returns the numeric ID of the current goroutine.
+// Exported so that packages doing goroutine-local lock tracking do not need
+// to duplicate the runtime-stack–parsing logic.
+func GoroutineID() int64 {
+	return goroutineID()
+}
+
 // BindNode associates h with the current goroutine.
 // All ndndsim shim calls from this goroutine will use h.
 func BindNode(h *NodeHooks) {
@@ -122,6 +129,31 @@ func UnbindNode() {
 	hooksMu.Lock()
 	delete(hooksMap, goroutineID())
 	hooksMu.Unlock()
+}
+
+// SwapNode atomically replaces the current goroutine's binding with h and
+// returns the previous binding (productionHooks if the goroutine was not bound).
+// Always pair with a deferred RestoreNode to safely restore the prior state.
+func SwapNode(h *NodeHooks) *NodeHooks {
+	id := goroutineID()
+	hooksMu.Lock()
+	prev := hooksMap[id]
+	hooksMap[id] = h
+	hooksMu.Unlock()
+	if prev == nil {
+		return productionHooks
+	}
+	return prev
+}
+
+// RestoreNode restores a binding previously saved by SwapNode.
+// If prev is productionHooks (goroutine was unbound), the goroutine is unbound again.
+func RestoreNode(prev *NodeHooks) {
+	if prev == productionHooks {
+		UnbindNode()
+	} else {
+		BindNode(prev)
+	}
 }
 
 // --- Shim functions called by transformer-generated ndnd code ---
@@ -161,15 +193,8 @@ func Go(f func()) {
 	}
 	// Fallback (should not happen — productionHooks always sets GoFunc).
 	go func() {
-		id := goroutineID()
-		hooksMu.Lock()
-		hooksMap[id] = h
-		hooksMu.Unlock()
-		defer func() {
-			hooksMu.Lock()
-			delete(hooksMap, id)
-			hooksMu.Unlock()
-		}()
+		BindNode(h)
+		defer UnbindNode()
 		f()
 	}()
 }
@@ -192,15 +217,8 @@ func Sleep(d time.Duration) {
 func GoLong(f func()) {
 	h := GetHooks()
 	go func() {
-		id := goroutineID()
-		hooksMu.Lock()
-		hooksMap[id] = h
-		hooksMu.Unlock()
-		defer func() {
-			hooksMu.Lock()
-			delete(hooksMap, id)
-			hooksMu.Unlock()
-		}()
+		BindNode(h)
+		defer UnbindNode()
 		f()
 	}()
 }
@@ -212,15 +230,8 @@ func GoLong(f func()) {
 func AfterFunc(d time.Duration, f func()) CancelHandle {
 	h := GetHooks()
 	cancel := h.AfterFunc(d, func() {
-		id := goroutineID()
-		hooksMu.Lock()
-		hooksMap[id] = h
-		hooksMu.Unlock()
-		defer func() {
-			hooksMu.Lock()
-			delete(hooksMap, id)
-			hooksMu.Unlock()
-		}()
+		BindNode(h)
+		defer UnbindNode()
 		f()
 	})
 	return CancelHandle{cancel: cancel}

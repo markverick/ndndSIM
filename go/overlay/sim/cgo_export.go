@@ -140,8 +140,11 @@ func NdndSimInit(
 	C.setDataReceivedCb(dataReceivedCb)
 	C.setRoutingConvergedCb(routingConvergedCb)
 
-
+	dvSpanMu.Lock()
+	dvSpanByPrefix = make(map[string]*dvSpanMetric)
 	dvSpanMu.Unlock()
+
+	globalRuntime = NewRuntime()
 
 	consumerMu.Lock()
 	consumerFlags = make(map[uint32][]*int32)
@@ -341,9 +344,7 @@ func NdndSimReceivePacket(nodeId C.uint32_t, ifIndex C.uint32_t, data unsafe.Poi
 
 	// Copy the data (C++ memory may be freed after this call)
 	frame := C.GoBytes(data, C.int(dataLen))
-	// Bind node hooks so FIB/PET lookups use this node's instances.
-	_ndndsim.BindNode(node.Hooks())
-	defer _ndndsim.UnbindNode()
+	// ReceiveOnInterface calls BindNode/UnbindNode internally.
 	node.ReceiveOnInterface(uint32(ifIndex), frame)
 }
 

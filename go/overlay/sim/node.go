@@ -88,8 +88,13 @@ func NewNode(id uint32, clock Clock) *Node {
 			})
 		},
 		AfterFunc: func(d time.Duration, f func()) func() {
-			t := time.AfterFunc(d, f)
-			return func() { t.Stop() }
+			h := hooks
+			id := clock.Schedule(d, func() {
+				_ndndsim.BindNode(h)
+				defer _ndndsim.UnbindNode()
+				f()
+			})
+			return func() { clock.Cancel(id) }
 		},
 		Now:              clock.Now,
 		Synchronous:      true,
