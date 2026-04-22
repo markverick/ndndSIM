@@ -104,7 +104,7 @@ pkg("dv/nfdc", map[string][]fileRule{
 pkg("std/sync", map[string][]fileRule{
 "svs.go":          {ruleSimTicker, ruleInjectSvsSimExtensions, ruleSvsChannels},
 "svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
-"svs_alo_data.go": {ruleInjectSvsAloDataChannels},
+"svs_alo_data.go": {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
 }),
 }
 }
