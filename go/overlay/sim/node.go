@@ -137,9 +137,12 @@ func (n *Node) Start() error {
 	// Deferring via clock.Schedule(0,...) ensures nodeMu is released before
 	// any app-layer lock acquisitions occur.
 	n.appFaceID = n.Forwarder.AddFace(defn.Local, defn.PointToPoint, func(faceID uint64, frame []byte) {
+		h := n.hooks
 		frameCopy := make([]byte, len(frame))
 		copy(frameCopy, frame)
 		n.Forwarder.clock.Schedule(0, func() {
+			_ndndsim.BindNode(h)
+			defer _ndndsim.UnbindNode()
 			n.appFace.Receive(frameCopy)
 		})
 	})
