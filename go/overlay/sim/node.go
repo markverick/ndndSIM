@@ -99,8 +99,29 @@ func NewNode(id uint32, clock Clock) *Node {
 
 	// Create the app face -- sendFunc forwards to the forwarder's app face.
 	// We use a closure that captures n so it can look up appFaceID at send time.
+	//
+	// IMPORTANT: delivery is scheduled via clock.Schedule(0,...) rather than
+	// calling ReceivePacket synchronously.  Synchronous delivery inside a
+	// goroutine that holds an upstream lock (e.g. SvsALO.mutex) would try to
+	// acquire the forwarder's nodeMu while the clock thread (inside Advance)
+	// already holds nodeMu and is waiting for the same upstream lock — classic
+	// ABBA deadlock.  Deferring via the clock guarantees the upstream lock is
+	// released before ReceivePacket acquires nodeMu.
 	n.appFace = NewSimFace(func(frame []byte) {
-		n.Forwarder.ReceivePacket(n.appFaceID, frame)
+		frameCopy := make([]byte, len(frame))
+		copy(frameCopy, frame)
+		h := _ndndsim.GetHooks()
+		if h.GoFunc != nil {
+			// Simulation mode: schedule as a deterministic 0-delay clock event.
+			h.GoFunc(func() {
+				_ndndsim.BindNode(h)
+				defer _ndndsim.UnbindNode()
+				n.Forwarder.ReceivePacket(n.appFaceID, frameCopy)
+			})
+		} else {
+			// Production mode or unhookedgoroutine: deliver synchronously.
+			n.Forwarder.ReceivePacket(n.appFaceID, frameCopy)
+		}
 	}, true)
 
 	n.appEngine = NewSimEngine(n.appFace, n.appTimer, id, nil)
