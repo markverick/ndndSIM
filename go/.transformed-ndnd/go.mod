@@ -49,4 +49,4 @@ require (
 
 require github.com/named-data/ndndsim v0.0.0-00010101000000-000000000000
 
-replace github.com/named-data/ndndsim => /home/stheera/atlas-scenarios/deps/ns-3/contrib/ndndSIM/go/ndndsim
+replace github.com/named-data/ndndsim => /home/stheera/atlas-scenario-2/deps/ns-3/contrib/ndndSIM/go/ndndsim

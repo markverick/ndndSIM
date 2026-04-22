@@ -49,7 +49,13 @@ func NewSimDvRouter(clock Clock, engine ndn.Engine, cfg *config.Config, hooks *_
 		clock.Schedule(0, func() {
 			_ndndsim.BindNode(h)
 			defer _ndndsim.UnbindNode()
-			fwd.withNodeFib(f)
+			// Do NOT hold nodeMu here: f() may acquire dv.mutex, while
+			// a concurrent _ndndsim.Go goroutine may hold dv.mutex and
+			// then try to acquire nodeMu (via nfdc.Exec → withNodeFib).
+			// Wrapping in withNodeFib would create an ABBA deadlock.
+			// Code inside f() that needs nodeMu (e.g. ReceivePacket)
+			// will acquire it directly at the point of use.
+			f()
 		})
 	}
 	makeAfterFunc := func(d time.Duration, f func()) func() {
@@ -57,7 +63,9 @@ func NewSimDvRouter(clock Clock, engine ndn.Engine, cfg *config.Config, hooks *_
 		id := clock.Schedule(d, func() {
 			_ndndsim.BindNode(h)
 			defer _ndndsim.UnbindNode()
-			fwd.withNodeFib(f)
+			// Do NOT hold nodeMu here for the same ABBA-deadlock reason
+			// described in makeGoFunc above.
+			f()
 		})
 		return func() { clock.Cancel(id) }
 	}
