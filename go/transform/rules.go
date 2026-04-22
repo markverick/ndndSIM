@@ -127,6 +127,23 @@ func isLongLivedCall(call *ast.CallExpr) bool {
 	return false // all cases now handled in makeGoCall or inject.go
 }
 
+// bodyContainsInfiniteForLoop returns true if the function literal's body
+// contains at least one *ast.ForStmt with a nil Cond (i.e., "for { … }").
+// Such goroutines run forever and cannot be scheduled as clock events in DES.
+func bodyContainsInfiniteForLoop(fl *ast.FuncLit) bool {
+	found := false
+	ast.Inspect(fl.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if fs, ok := n.(*ast.ForStmt); ok && fs.Cond == nil {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
 // makeGoCall returns the statement to replace a GoStmt.
 //
 //   - For short-lived goroutines: _ndndsim.Go(func() { … })
@@ -139,6 +156,11 @@ func isLongLivedCall(call *ast.CallExpr) bool {
 //   - For s.run() (SvsALO blocking loop):
 //     if !_ndndsim.IsSynchronous() { go s.run() }
 //     In sim, delivery is handled by simQueuePub/simQueueError/simQueuePubl.
+//
+//   - For IIFEs whose body contains an infinite for loop (for { … }):
+//     if !_ndndsim.IsSynchronous() { go func(…) { for { … } }(…) }
+//     Scheduling a blocking loop as a clock event would deadlock the DES clock.
+//     Such goroutines are simply skipped in sim mode (e.g. startPrefixPrune).
 func makeGoCall(call *ast.CallExpr) ast.Node {
 	var funcLit *ast.FuncLit
 
@@ -190,6 +212,19 @@ func makeGoCall(call *ast.CallExpr) ast.Node {
 					&ast.GoStmt{Call: innerCall},
 				}},
 			}
+		}
+	}
+
+	// Detect IIFE goroutines (with or without parameters) whose body contains
+	// an infinite for loop (for { … }).  Scheduling such a blocking loop via
+	// GoFunc=clock.Schedule would run it synchronously inside Advance() and
+	// deadlock the DES clock.  Skip them entirely in sim mode instead.
+	if fl, ok := call.Fun.(*ast.FuncLit); ok && bodyContainsInfiniteForLoop(fl) {
+		return &ast.IfStmt{
+			Cond: &ast.UnaryExpr{Op: token.NOT, X: isSynchronousCallExpr()},
+			Body: &ast.BlockStmt{List: []ast.Stmt{
+				&ast.GoStmt{Call: call},
+			}},
 		}
 	}
 
