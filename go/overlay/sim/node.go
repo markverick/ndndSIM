@@ -216,10 +216,13 @@ func (n *Node) RemoveNetworkFace(ifIndex uint32) {
 // ReceiveOnInterface injects a packet received on an ns-3 network interface.
 // ifIndex == 0xFFFFFFFF is the special app-face interface.
 // Binds this node's hooks for the duration of processing so that goroutine-
-// local simFib/simPet return the correct per-node instances.
+// local simFib/simPet return the correct per-node instances.  SwapNode/
+// RestoreNode is used so that any prior binding held by the caller (e.g. a
+// clock event that already bound a different node) is correctly restored on
+// exit instead of being unconditionally removed.
 func (n *Node) ReceiveOnInterface(ifIndex uint32, frame []byte) {
-	_ndndsim.BindNode(n.hooks)
-	defer _ndndsim.UnbindNode()
+	prev := _ndndsim.SwapNode(n.hooks)
+	defer _ndndsim.RestoreNode(prev)
 	if ifIndex == 0xFFFFFFFF {
 		// App face: deliver directly to the forwarder on the app face
 		n.Forwarder.ReceivePacket(n.appFaceID, frame)
@@ -379,12 +382,20 @@ func (n *Node) DvRouter() *SimDvRouter {
 
 // AnnouncePrefixToDv announces a prefix to the DV router if DV is running.
 // This triggers DV prefix table propagation to all neighbors.
+//
+// Node hooks must be bound during AnnouncePrefix so that _ndndsim.Go calls
+// inside the DV prefix handler (e.g. SVS Publish) schedule as 0-delay clock
+// events instead of spawning real goroutines.  Without the binding,
+// IsSynchronous() returns false, GoFunc falls through to the production
+// "go f()" path, and DES determinism is violated.
 func (n *Node) AnnouncePrefixToDv(name enc.Name, cost uint64) {
 	n.mu.Lock()
 	dv := n.dvRouter
 	faceID := n.appFaceID
 	n.mu.Unlock()
 	if dv != nil {
+		prev := _ndndsim.SwapNode(n.hooks)
+		defer _ndndsim.RestoreNode(prev)
 		dv.AnnouncePrefix(name, faceID, cost)
 	}
 }
@@ -397,6 +408,8 @@ func (n *Node) WithdrawPrefixFromDv(name enc.Name) {
 	faceID := n.appFaceID
 	n.mu.Unlock()
 	if dv != nil {
+		prev := _ndndsim.SwapNode(n.hooks)
+		defer _ndndsim.RestoreNode(prev)
 		dv.WithdrawPrefix(name, faceID)
 	}
 }
