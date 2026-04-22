@@ -75,11 +75,14 @@ func NewNode(id uint32, clock Clock) *Node {
 	// short-lived goroutine spawns (go sendSyncInterest, go announcePrefix_, …)
 	// become deterministic 0-delay clock events instead of real goroutines.
 	// Long-lived blocking loops use GoLong() and are excluded from GoFunc.
-	hooks := &_ndndsim.NodeHooks{
+	//
+	// hooks is declared first (var) so the GoFunc closure can capture it by
+	// reference — it will be set before GoFunc is ever called.
+	var hooks *_ndndsim.NodeHooks
+	hooks = &_ndndsim.NodeHooks{
 		GoFunc: func(f func()) {
-			h := hooks // capture — set below before any goroutine runs
 			clock.Schedule(0, func() {
-				_ndndsim.BindNode(h)
+				_ndndsim.BindNode(hooks)
 				defer _ndndsim.UnbindNode()
 				f()
 			})
