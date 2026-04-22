@@ -140,16 +140,43 @@ func (c CancelHandle) Stop() bool {
 	return true
 }
 
-// Go launches f as a real goroutine, propagating the current node's hooks
-// into that goroutine so that ndndsim.Now/AfterFunc/IsSynchronous work
-// correctly inside f.
+// Go dispatches f as a short-lived unit of work.  When a GoFunc hook is set
+// (simulation mode), f is scheduled as a deterministic clock event at delay=0
+// so that all DV work items (updateFib, postUpdateRib, dataHandler, …) run in
+// strict sim-clock order through DeterministicClock.Advance.  In production
+// (GoFunc == nil) a real goroutine is spawned instead.
 //
-// Note: this always uses a real goroutine (not GoFunc / clock scheduling).
-// GoFunc is reserved for the DV router's own single-step task dispatch
-// (router.GoFunc = clock.Schedule).  Transformer-generated `go f()` calls
-// need real goroutines so that long-lived loops (e.g. SvSync.main) don't
-// block the simulation clock's Advance method.
+// Long-lived blocking loops (SvSync.main, SvsALO.run, nfdc.Start) must NOT
+// use Go(): use GoLong() for those so they always get real goroutines.
 func Go(f func()) {
+	h := GetHooks()
+	if h.GoFunc != nil {
+		// Simulation path: route through the deterministic-clock scheduler.
+		// The GoFunc closure (makeGoFunc in overlay/sim/dv.go) already wraps
+		// the callback with BindNode/UnbindNode so hooks are visible inside f.
+		h.GoFunc(f)
+		return
+	}
+	// Production path: real goroutine with hook propagation.
+	go func() {
+		id := goroutineID()
+		hooksMu.Lock()
+		hooksMap[id] = h
+		hooksMu.Unlock()
+		defer func() {
+			hooksMu.Lock()
+			delete(hooksMap, id)
+			hooksMu.Unlock()
+		}()
+		f()
+	}()
+}
+
+// GoLong spawns f as a real goroutine regardless of the GoFunc hook.
+// Use this for long-lived blocking loops (SvSync.main, SvsALO.run, nfdc.Start)
+// that must not be scheduled as clock events because they never return until
+// explicitly stopped via a channel signal.
+func GoLong(f func()) {
 	h := GetHooks()
 	go func() {
 		id := goroutineID()

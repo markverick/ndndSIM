@@ -86,6 +86,10 @@ pkg("fw/table", map[string][]fileRule{
 "rib.go":                    {ruleFibGlobalPointerInternal, ruleInjectRibSimFunctions},
 "dead-nonce-list.go":        {ruleDeadNonceListMutex},
 }),
+// dv/table: apply global rewrites (time.Now→_ndndsim.Now,
+// time.Since→_ndndsim.Now().Sub, go→_ndndsim.Go) to all files.
+// Fixes lastSeen tracking and IsDead() in neighbor_table.go.
+pkg("dv/table", map[string][]fileRule{}),
 pkg("dv/dv", map[string][]fileRule{
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp},
 }),
@@ -113,6 +117,10 @@ pkg("fw/table", map[string][]fileRule{
 "rib.go":                    {ruleFibGlobalPointerInternal, ruleInjectRibSimFunctions},
 "dead-nonce-list.go":        {ruleDeadNonceListMutex},
 }),
+// dv/table: apply global rewrites (time.Now→_ndndsim.Now,
+// time.Since→_ndndsim.Now().Sub, go→_ndndsim.Go) to all files.
+// Fixes lastSeen tracking and IsDead() in neighbor_table.go.
+pkg("dv/table", map[string][]fileRule{}),
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
@@ -131,7 +139,6 @@ pkg("std/sync", map[string][]fileRule{
 }
 }
 
-// rewritePackage applies all relevant rewrites to every non-test Go file in r.pkgDir.
 func rewritePackage(r packageRewrite) error {
 entries, err := os.ReadDir(r.pkgDir)
 if err != nil {

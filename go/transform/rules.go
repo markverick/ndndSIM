@@ -47,8 +47,11 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 			c.Replace(&ast.CallExpr{Fun: ast.NewIdent("simPet")})
 			modified = true
 
-		// time.Now() → _ndndsim.Now()
-		// time.AfterFunc(d,f) → _ndndsim.AfterFunc(d,f)
+		// time.Now()       → _ndndsim.Now()
+		// time.AfterFunc()  → _ndndsim.AfterFunc()
+		// time.Since(t)    → _ndndsim.Now().Sub(t)
+		//   time.Since(t) is sugar for time.Now().Sub(t); replacing it here
+		//   ensures both the Now() call and the subtraction use the sim clock.
 		case *ast.CallExpr:
 			sel, ok := n.Fun.(*ast.SelectorExpr)
 			if !ok {
@@ -63,6 +66,24 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 				sel.X = ast.NewIdent("_ndndsim")
 				modified = true
 				ndndsimUsed = true
+			case "Since":
+				// Replace time.Since(t) with _ndndsim.Now().Sub(t)
+				if len(n.Args) == 1 {
+					c.Replace(&ast.CallExpr{
+						Fun: &ast.SelectorExpr{
+							X: &ast.CallExpr{
+								Fun: &ast.SelectorExpr{
+									X:   ast.NewIdent("_ndndsim"),
+									Sel: ast.NewIdent("Now"),
+								},
+							},
+							Sel: ast.NewIdent("Sub"),
+						},
+						Args: n.Args,
+					})
+					modified = true
+					ndndsimUsed = true
+				}
 			}
 
 		// table.FibStrategyTable      → simFib()
@@ -97,6 +118,23 @@ func applyGlobalRewrites(file *ast.File) (modified, ndndsimUsed bool) {
 // Rule: GoStmt → _ndndsim.Go(func() { … })
 // ---------------------------------------------------------------------------
 
+// isLongLivedCall returns true when call is a known long-lived blocking-loop
+// method that must run in a real goroutine rather than a clock-scheduled event.
+// These methods never return until explicitly stopped (via a channel/stop
+// signal) so they cannot be executed inside DeterministicClock.Advance().
+func isLongLivedCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "main", "run":
+		// SvSync.main() and SvsALO.run() are blocking event-loop goroutines.
+		return true
+	}
+	return false
+}
+
 func makeGoCall(call *ast.CallExpr) *ast.ExprStmt {
 	var funcLit *ast.FuncLit
 
@@ -111,11 +149,26 @@ func makeGoCall(call *ast.CallExpr) *ast.ExprStmt {
 		}
 	}
 
+	// Long-lived blocking loops must use GoLong so they bypass the
+	// GoFunc=clock.Schedule hook and always run in a real goroutine.
+	// Check both the original call and (for IIFEs) the first statement
+	// inside the unwrapped function literal body.
+	goFuncName := "Go"
+	if isLongLivedCall(call) {
+		goFuncName = "GoLong"
+	} else if funcLit != nil && len(funcLit.Body.List) == 1 {
+		if es, ok := funcLit.Body.List[0].(*ast.ExprStmt); ok {
+			if inner, ok := es.X.(*ast.CallExpr); ok && isLongLivedCall(inner) {
+				goFuncName = "GoLong"
+			}
+		}
+	}
+
 	return &ast.ExprStmt{
 		X: &ast.CallExpr{
 			Fun: &ast.SelectorExpr{
 				X:   ast.NewIdent("_ndndsim"),
-				Sel: ast.NewIdent("Go"),
+				Sel: ast.NewIdent(goFuncName),
 			},
 			Args: []ast.Expr{funcLit},
 		},

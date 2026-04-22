@@ -376,7 +376,9 @@ func (dv *Router) Init() error {
 	dv.pfx.Reset()
 
 	// Start the NFD management thread in a real goroutine (long-lived loop).
-	_ndndsim.Go(func() { dv.nfdc.Start() })
+	// GoLong bypasses the GoFunc/clock-schedule hook so the blocking select
+	// loop inside nfdc.Start() does not deadlock DeterministicClock.Advance.
+	_ndndsim.GoLong(func() { dv.nfdc.Start() })
 
 	return nil
 }
@@ -397,6 +399,10 @@ func (dv *Router) Cleanup() {
 		dv.pfx.Stop()
 	}
 	dv.client.Stop()
+	// Stop the nfdc goroutine spawned in Init/Start so it does not leak
+	// into the next test. nfdc.Stop() sends on its stop channel and the
+	// goroutine exits cleanly.
+	dv.nfdc.Stop()
 	log.Info(dv, "Cleaned up DV router (sim)")
 }
 
@@ -669,7 +675,9 @@ func (dv *Router) Init() error {
 	dv.pfx.Reset()
 
 	// Start the NFD management thread in a real goroutine (long-lived loop).
-	_ndndsim.Go(func() { dv.nfdc.Start() })
+	// GoLong bypasses the GoFunc/clock-schedule hook so the blocking select
+	// loop inside nfdc.Start() does not deadlock DeterministicClock.Advance.
+	_ndndsim.GoLong(func() { dv.nfdc.Start() })
 
 	return nil
 }
@@ -688,6 +696,10 @@ func (dv *Router) RunDeadcheck() {
 func (dv *Router) Cleanup() {
 	dv.pfxSvs.Stop()
 	dv.client.Stop()
+	// Stop the nfdc goroutine spawned in Init() so it does not leak
+	// into the next test. nfdc.Stop() sends on its stop channel and the
+	// goroutine exits cleanly.
+	dv.nfdc.Stop()
 	log.Info(dv, "Cleaned up DV router (sim)")
 }
 
