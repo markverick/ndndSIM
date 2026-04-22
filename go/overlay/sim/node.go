@@ -99,29 +99,8 @@ func NewNode(id uint32, clock Clock) *Node {
 
 	// Create the app face -- sendFunc forwards to the forwarder's app face.
 	// We use a closure that captures n so it can look up appFaceID at send time.
-	//
-	// IMPORTANT: delivery is scheduled via clock.Schedule(0,...) rather than
-	// calling ReceivePacket synchronously.  Synchronous delivery inside a
-	// goroutine that holds an upstream lock (e.g. SvsALO.mutex) would try to
-	// acquire the forwarder's nodeMu while the clock thread (inside Advance)
-	// already holds nodeMu and is waiting for the same upstream lock — classic
-	// ABBA deadlock.  Deferring via the clock guarantees the upstream lock is
-	// released before ReceivePacket acquires nodeMu.
 	n.appFace = NewSimFace(func(frame []byte) {
-		frameCopy := make([]byte, len(frame))
-		copy(frameCopy, frame)
-		h := _ndndsim.GetHooks()
-		if h.GoFunc != nil {
-			// Simulation mode: schedule as a deterministic 0-delay clock event.
-			h.GoFunc(func() {
-				_ndndsim.BindNode(h)
-				defer _ndndsim.UnbindNode()
-				n.Forwarder.ReceivePacket(n.appFaceID, frameCopy)
-			})
-		} else {
-			// Production mode or unhookedgoroutine: deliver synchronously.
-			n.Forwarder.ReceivePacket(n.appFaceID, frameCopy)
-		}
+		n.Forwarder.ReceivePacket(n.appFaceID, frame)
 	}, true)
 
 	n.appEngine = NewSimEngine(n.appFace, n.appTimer, id, nil)
@@ -134,10 +113,23 @@ func (n *Node) Start() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// Create internal application face in the forwarder
+	// Create internal application face in the forwarder.
+	//
+	// IMPORTANT: Forwarder→App delivery is scheduled via clock.Schedule(0,...)
+	// rather than calling appFace.Receive synchronously.  The AddFace callback
+	// fires while the forwarder holds nodeMu (inside withNodeFib).  Calling
+	// appFace.Receive synchronously allows app-layer callbacks to acquire
+	// upstream locks (e.g. SvsALO.mutex via snapRecvCallback), creating an
+	// ABBA deadlock with goroutines that hold SvsALO.mutex and wait for nodeMu
+	// (e.g. snapshot fetchers doing Express → ReceivePacket → withNodeFib).
+	// Deferring via clock.Schedule(0,...) ensures nodeMu is released before
+	// any app-layer lock acquisitions occur.
 	n.appFaceID = n.Forwarder.AddFace(defn.Local, defn.PointToPoint, func(faceID uint64, frame []byte) {
-			// Forwarder -> App: deliver to the application face
-		n.appFace.Receive(frame)
+		frameCopy := make([]byte, len(frame))
+		copy(frameCopy, frame)
+		n.Forwarder.clock.Schedule(0, func() {
+			n.appFace.Receive(frameCopy)
+		})
 	})
 
 	// Set forwarder and appFaceID on the engine for ExecMgmtCmd
