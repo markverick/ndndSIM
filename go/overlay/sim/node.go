@@ -345,7 +345,7 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 	// This mirrors real NDN localhop-scope forwarding: interests scoped to
 	// /localhop are forwarded to all directly-connected faces.
 	for _, faceID := range n.ifaceFaces {
-		n.Forwarder.AddRouteWithOrigin(enc.LOCALHOP, faceID, 1, config.NlsrOrigin)
+		n.Forwarder.AddRouteWithOrigin(enc.Name{enc.LOCALHOP}, faceID, 1, config.NlsrOrigin)
 	}
 
 	n.dvRouter = sdv
