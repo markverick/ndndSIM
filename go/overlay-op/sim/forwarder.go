@@ -1,9 +1,6 @@
 package sim
 
 import (
-	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -157,22 +154,9 @@ func (fwd *SimForwarder) GetFace(id uint64) *DispatchFace {
 
 // --- RIB/FIB management ---
 
-// fwdGoroutineID returns the numeric ID of the current goroutine.
-func fwdGoroutineID() int64 {
-	var buf [32]byte
-	n := runtime.Stack(buf[:], false)
-	s := strings.TrimPrefix(string(buf[:n]), "goroutine ")
-	i := strings.IndexByte(s, ' ')
-	if i < 0 {
-		return 0
-	}
-	id, _ := strconv.ParseInt(s[:i], 10, 64)
-	return id
-}
-
 // lockNode acquires the per-node forwarding lock.
 func (fwd *SimForwarder) lockNode() bool {
-	id := fwdGoroutineID()
+	id := _ndndsim.GoroutineID()
 	if atomic.LoadInt64(&fwd.nodeHolder) == id {
 		return false
 	}
@@ -197,8 +181,8 @@ func (fwd *SimForwarder) withNodeFib(f func()) {
 		f()
 		return
 	}
-	_ndndsim.BindNode(fwd.hooks)
-	defer _ndndsim.UnbindNode()
+	prev := _ndndsim.SwapNode(fwd.hooks)
+	defer _ndndsim.RestoreNode(prev)
 	f()
 }
 
@@ -265,9 +249,12 @@ func (fwd *SimForwarder) RemoveRouteWithOrigin(name enc.Name, faceID uint64, ori
 
 // ReceivePacket is the main entry point for packets arriving from ns-3.
 func (fwd *SimForwarder) ReceivePacket(faceID uint64, frame []byte) {
+	// Bind per-node hooks so that goroutine-local simFib returns this
+	// node's instance.  SwapNode/RestoreNode correctly restores any prior
+	// binding held by the caller rather than unconditionally unbinding.
 	if fwd.hooks != nil {
-		_ndndsim.BindNode(fwd.hooks)
-		defer _ndndsim.UnbindNode()
+		prev := _ndndsim.SwapNode(fwd.hooks)
+		defer _ndndsim.RestoreNode(prev)
 	}
 	face := fwd.GetFace(faceID)
 	if face == nil || face.State() != defn.Up {

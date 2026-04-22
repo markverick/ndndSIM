@@ -390,13 +390,14 @@ func NdndSimFireEvent(nodeId C.uint32_t, eventId C.uint64_t) {
 	if !ok {
 		return
 	}
-	clock := val.(*Ns3Clock)
-	// Bind the node's hooks so all ndnd callbacks execute with the correct
-	// per-node state (FIB, PET, clock, scheduler).
-	if node := globalRuntime.GetNode(uint32(nodeId)); node != nil {
-		_ndndsim.BindNode(node.Hooks())
-		defer _ndndsim.UnbindNode()
+	if globalRuntime == nil {
+		return
 	}
+	clock := val.(*Ns3Clock)
+	// Each scheduled callback manages its own BindNode/UnbindNode (GoFunc,
+	// AfterFunc, heartbeat, deadcheck, maintenance all install per-node
+	// bindings at entry).  No outer bind is needed here; adding one would
+	// create a double-unbind when the callback's own defer UnbindNode fires.
 	clock.FireEvent(EventID(eventId))
 }
 

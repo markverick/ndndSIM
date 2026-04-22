@@ -299,13 +299,12 @@ func (fwd *SimForwarder) RemoveRouteWithOrigin(name enc.Name, faceID uint64, ori
 // forwarding pipeline.
 func (fwd *SimForwarder) ReceivePacket(faceID uint64, frame []byte) {
 	// Bind per-node hooks so that goroutine-local simFib/simPet return
-	// this node's instances.  This is a no-op if the caller (e.g.,
-	// ReceiveOnInterface or a CGo boundary) has already bound the hooks,
-	// but is necessary for paths that call ReceivePacket directly (e.g.,
-	// the appFace send closure in Node.Start).
+	// this node's instances.  SwapNode/RestoreNode correctly restores any
+	// prior binding held by the caller (e.g. ReceiveOnInterface already
+	// has n.hooks bound; the swap is a no-op in value but restores on exit).
 	if fwd.hooks != nil {
-		_ndndsim.BindNode(fwd.hooks)
-		defer _ndndsim.UnbindNode()
+		prev := _ndndsim.SwapNode(fwd.hooks)
+		defer _ndndsim.RestoreNode(prev)
 	}
 	face := fwd.GetFace(faceID)
 	if face == nil || face.State() != defn.Up {
