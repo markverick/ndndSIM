@@ -6,7 +6,6 @@ import (
 	"time"
 	"unsafe"
 
-	_ndndsim "github.com/named-data/ndndsim"
 	dv_table "github.com/named-data/ndnd/dv/table"
 	enc "github.com/named-data/ndnd/std/encoding"
 	"github.com/named-data/ndnd/std/ndn"

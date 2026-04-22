@@ -3,7 +3,6 @@ package sim
 import (
 	"encoding/binary"
 	"fmt"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,7 +45,7 @@ type SimEngine struct {
 	onDataReceived func(nodeID uint32, dataSize uint32, dataName string)
 
 		// Interest handler FIB (prefix -> handler)
-	fib     *nameTrie[ndn.InterestHandler]
+	fib     *nameTrie
 	fibLock sync.Mutex
 
 		// Pending Interest Table for Express() -- maps PIT token to callback
@@ -72,7 +71,7 @@ func NewSimEngine(face ndn.Face, timer ndn.Timer, nodeID uint32, onDataReceived 
 		timer:          timer,
 		nodeID:         nodeID,
 		onDataReceived: onDataReceived,
-		fib:            newNameTrie[ndn.InterestHandler](),
+			fib:            newNameTrie(),
 		pit:            make(map[uint64]*pendingInterest),
 	}
 }
@@ -612,19 +611,19 @@ func (e *SimEngine) onData(data ndn.Data, raw enc.Wire, sigCovered enc.Wire, pit
 
 // --- Minimal name trie for Interest dispatch ---
 
-type nameTrie[V any] struct {
-	val V
-	par *nameTrie[V]
+type nameTrie struct {
+	val ndn.InterestHandler
+	par *nameTrie
 	dep int
 	key string
-	chd map[string]*nameTrie[V]
+	chd map[string]*nameTrie
 }
 
-func newNameTrie[V any]() *nameTrie[V] {
-	return &nameTrie[V]{chd: map[string]*nameTrie[V]{}}
+func newNameTrie() *nameTrie {
+	return &nameTrie{chd: map[string]*nameTrie{}}
 }
 
-func (n *nameTrie[V]) exactMatch(name enc.Name) *nameTrie[V] {
+func (n *nameTrie) exactMatch(name enc.Name) *nameTrie {
 	if len(name) <= n.dep {
 		return n
 	}
@@ -635,7 +634,7 @@ func (n *nameTrie[V]) exactMatch(name enc.Name) *nameTrie[V] {
 	return nil
 }
 
-func (n *nameTrie[V]) prefixMatch(name enc.Name) *nameTrie[V] {
+func (n *nameTrie) prefixMatch(name enc.Name) *nameTrie {
 	if len(name) <= n.dep {
 		return n
 	}
@@ -646,28 +645,28 @@ func (n *nameTrie[V]) prefixMatch(name enc.Name) *nameTrie[V] {
 	return n
 }
 
-func (n *nameTrie[V]) matchAlways(name enc.Name) *nameTrie[V] {
+func (n *nameTrie) matchAlways(name enc.Name) *nameTrie {
 	if len(name) <= n.dep {
 		return n
 	}
 	c := name[n.dep].TlvStr()
 	ch, ok := n.chd[c]
 	if !ok {
-		ch = &nameTrie[V]{
+		ch = &nameTrie{
 			par: n,
 			dep: n.dep + 1,
 			key: c,
-			chd: map[string]*nameTrie[V]{},
+			chd: map[string]*nameTrie{},
 		}
 		n.chd[c] = ch
 	}
 	return ch.matchAlways(name)
 }
 
-// prune removes this leaf node and any childless zero-valued ancestors
+// prune removes this leaf node and any childless nil-valued ancestors
 // walking up to (but not including) the root.
-func (n *nameTrie[V]) prune() {
-	for n.par != nil && reflect.ValueOf(&n.val).Elem().IsZero() && len(n.chd) == 0 {
+func (n *nameTrie) prune() {
+	for n.par != nil && n.val == nil && len(n.chd) == 0 {
 		delete(n.par.chd, n.key)
 		n = n.par
 	}
