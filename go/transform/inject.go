@@ -140,6 +140,7 @@ type simTicker struct {
 	cancel    func()
 	stopped   atomic.Bool
 	callback  func() // direct tick handler in sim mode (no channel read needed)
+	version   uint64 // incremented by Reset/Stop; guards against double-reschedule
 }
 
 // newSimTicker creates a simTicker that fires every d using the AfterFunc hook
@@ -164,25 +165,33 @@ func newSimTicker(d time.Duration) *simTicker {
 }
 
 func (t *simTicker) schedule(d time.Duration) {
+	v := t.version
 	t.cancel = t.afterFunc(d, func() {
 		if t.stopped.Load() {
 			return
 		}
 		if t.callback != nil {
-			// Sim mode: invoke handler directly — no goroutine, no channel.
+			// Sim mode: call handler directly.  Use version to detect whether
+			// the callback called Reset() — if so, it already rescheduled and
+			// we must NOT auto-reschedule here (would produce a duplicate tick).
 			t.callback()
+			if t.version == v {
+				// Callback did not Reset/Stop — keep the periodic tick going.
+				t.schedule(t.period)
+			}
 		} else {
 			select {
 			case t.C <- time.Time{}:
 			default:
 			}
+			t.schedule(t.period)
 		}
-		t.schedule(t.period)
 	})
 }
 
 // Reset restarts the ticker with a new period.
 func (t *simTicker) Reset(d time.Duration) {
+	t.version++ // signal that we rescheduled — suppress auto-reschedule in handler
 	t.stopped.Store(false)
 	if t.cancel != nil {
 		t.cancel()
@@ -193,6 +202,7 @@ func (t *simTicker) Reset(d time.Duration) {
 
 // Stop cancels the ticker.
 func (t *simTicker) Stop() {
+	t.version++ // signal a version change so any running handler skips auto-reschedule
 	t.stopped.Store(true)
 	if t.cancel != nil {
 		t.cancel()
