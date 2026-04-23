@@ -436,6 +436,221 @@ func applySimTicker(file *ast.File) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Rule: SvSync uses a per-instance deterministic rand.Rand
+// ---------------------------------------------------------------------------
+
+// applySvsDeterministicRNG moves SVS timeout jitter off the process-global RNG
+// and onto a per-instance generator seeded from GroupPrefix. This preserves
+// deterministic simulation behavior without replacing the upstream file.
+func applySvsDeterministicRNG(file *ast.File) bool {
+	modified := false
+
+	if addSvSyncRngField(file) {
+		modified = true
+	}
+	if addSvSyncRngInitializer(file) {
+		modified = true
+	}
+
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		call, ok := c.Node().(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "rand" || sel.Sel.Name != "Int64N" {
+			return true
+		}
+		c.Replace(&ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X: &ast.SelectorExpr{
+					X:   ast.NewIdent("s"),
+					Sel: ast.NewIdent("rng"),
+				},
+				Sel: ast.NewIdent("Int64N"),
+			},
+			Args: call.Args,
+		})
+		modified = true
+		return true
+	}, nil)
+
+	return modified
+}
+
+func addSvSyncRngField(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != "SvSync" {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			if structHasNamedField(st, "rng") {
+				return false
+			}
+			st.Fields.List = append(st.Fields.List, &ast.Field{
+				Names: []*ast.Ident{ast.NewIdent("rng")},
+				Type: &ast.StarExpr{X: &ast.SelectorExpr{
+					X:   ast.NewIdent("rand"),
+					Sel: ast.NewIdent("Rand"),
+				}},
+			})
+			return true
+		}
+	}
+	return false
+}
+
+func addSvSyncRngInitializer(file *ast.File) bool {
+	lit := findSvSyncConstructorLiteral(file)
+	if lit == nil || compositeLiteralHasKey(lit, "rng") {
+		return false
+	}
+	lit.Elts = append(lit.Elts, &ast.KeyValueExpr{
+		Key: ast.NewIdent("rng"),
+		Value: &ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   ast.NewIdent("rand"),
+				Sel: ast.NewIdent("New"),
+			},
+			Args: []ast.Expr{&ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("rand"),
+					Sel: ast.NewIdent("NewPCG"),
+				},
+				Args: []ast.Expr{
+					&ast.CallExpr{Fun: &ast.SelectorExpr{
+						X: &ast.SelectorExpr{
+							X:   ast.NewIdent("opts"),
+							Sel: ast.NewIdent("GroupPrefix"),
+						},
+						Sel: ast.NewIdent("Hash"),
+					}},
+					&ast.BasicLit{Kind: token.INT, Value: "0"},
+				},
+			}},
+		},
+	})
+	return true
+}
+
+func structHasNamedField(st *ast.StructType, name string) bool {
+	for _, field := range st.Fields.List {
+		for _, fieldName := range field.Names {
+			if fieldName.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findSvSyncConstructorLiteral(file *ast.File) *ast.CompositeLit {
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "NewSvSync" || fd.Body == nil {
+			continue
+		}
+		var lit *ast.CompositeLit
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			ret, ok := n.(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 1 {
+				return true
+			}
+			lit = svSyncCompositeLiteral(ret.Results[0])
+			return lit == nil
+		})
+		if lit != nil {
+			return lit
+		}
+	}
+	return nil
+}
+
+func svSyncCompositeLiteral(expr ast.Expr) *ast.CompositeLit {
+	switch node := expr.(type) {
+	case *ast.UnaryExpr:
+		if node.Op == token.AND {
+			return svSyncCompositeLiteral(node.X)
+		}
+	case *ast.CompositeLit:
+		if ident, ok := node.Type.(*ast.Ident); ok && ident.Name == "SvSync" {
+			return node
+		}
+	}
+	return nil
+}
+
+func compositeLiteralHasKey(lit *ast.CompositeLit, name string) bool {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := kv.Key.(*ast.Ident)
+		if ok && ident.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Rule: append dv.runConvergenceHook() to postUpdateRib()
+// ---------------------------------------------------------------------------
+
+func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "postUpdateRib" || fd.Body == nil {
+			continue
+		}
+		if blockHasSelectorCall(fd.Body, "dv", "runConvergenceHook") {
+			return false
+		}
+		fd.Body.List = append(fd.Body.List, &ast.ExprStmt{X: &ast.CallExpr{
+			Fun: &ast.SelectorExpr{X: ast.NewIdent("dv"), Sel: ast.NewIdent("runConvergenceHook")},
+		}})
+		return true
+	}
+	return false
+}
+
+func blockHasSelectorCall(block *ast.BlockStmt, recvName, methodName string) bool {
+	for _, stmt := range block.List {
+		es, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+		call, ok := es.X.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != methodName {
+			continue
+		}
+		recv, ok := sel.X.(*ast.Ident)
+		if ok && recv.Name == recvName {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
 // Rule: storage.NewMemoryStore() → simNewStore()   (router.go only)
 // ---------------------------------------------------------------------------
 

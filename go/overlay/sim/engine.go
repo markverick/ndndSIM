@@ -323,80 +323,7 @@ func (e *SimEngine) ExecMgmtCmd(module string, cmd string, args any) (any, error
 			return dataset, nil
 		}
 	case "pet":
-		switch cmd {
-		case "add-egress":
-			if ca.Name == nil {
-				return nil, fmt.Errorf("pet/add-egress: missing name")
-			}
-			if ca.Egress == nil || len(ca.Egress.Name) == 0 {
-				return nil, fmt.Errorf("pet/add-egress: missing egress")
-			}
-			e.forwarder.Thread().Pet().AddEgressEnc(ca.Name, ca.Egress.Name, ca.Multicast)
-			return &mgmt.ControlResponse{Val: &mgmt.ControlResponseVal{
-				StatusCode: 200,
-				Params:     &mgmt.ControlArgs{Name: ca.Name, Egress: ca.Egress},
-			}}, nil
-		case "remove-egress":
-			if ca.Name == nil {
-				return nil, fmt.Errorf("pet/remove-egress: missing name")
-			}
-			if ca.Egress == nil || len(ca.Egress.Name) == 0 {
-				return nil, fmt.Errorf("pet/remove-egress: missing egress")
-			}
-			e.forwarder.Thread().Pet().RemoveEgressEnc(ca.Name, ca.Egress.Name)
-			return &mgmt.ControlResponse{Val: &mgmt.ControlResponseVal{
-				StatusCode: 200,
-				Params:     &mgmt.ControlArgs{Name: ca.Name, Egress: ca.Egress},
-			}}, nil
-		case "add-nexthop":
-			if ca.Name == nil {
-				return nil, fmt.Errorf("pet/add-nexthop: missing name")
-			}
-			faceID := ca.FaceId.GetOr(0)
-			if faceID == 0 {
-				faceID = e.appFaceID
-			}
-			if e.forwarder.GetFace(faceID) == nil {
-				return nil, fmt.Errorf("pet/add-nexthop: face %d does not exist", faceID)
-			}
-			cost := ca.Cost.GetOr(0)
-			e.forwarder.Thread().Pet().AddNextHopEnc(ca.Name, faceID, cost)
-			return &mgmt.ControlResponse{Val: &mgmt.ControlResponseVal{
-				StatusCode: 200,
-				Params:     &mgmt.ControlArgs{Name: ca.Name, FaceId: optional.Some(faceID), Cost: optional.Some(cost)},
-			}}, nil
-		case "remove-nexthop":
-			if ca.Name == nil {
-				return nil, fmt.Errorf("pet/remove-nexthop: missing name")
-			}
-			faceID := ca.FaceId.GetOr(0)
-			if faceID == 0 {
-				faceID = e.appFaceID
-			}
-			e.forwarder.Thread().Pet().RemoveNextHopEnc(ca.Name, faceID)
-			return &mgmt.ControlResponse{Val: &mgmt.ControlResponseVal{
-				StatusCode: 200,
-				Params:     &mgmt.ControlArgs{Name: ca.Name, FaceId: optional.Some(faceID)},
-			}}, nil
-		case "list":
-			entries := e.forwarder.Thread().Pet().GetAllEntries()
-			dataset := &mgmt.PetStatus{}
-			for _, entry := range entries {
-				petEntry := &mgmt.PetEntry{
-					Name:           entry.Name,
-					EgressRecords:  make([]*mgmt.EgressRecord, 0, len(entry.EgressRouters)),
-					NextHopRecords: make([]*mgmt.NextHopRecord, 0, len(entry.NextHops)),
-				}
-				for _, egress := range entry.EgressRouters {
-					petEntry.EgressRecords = append(petEntry.EgressRecords, &mgmt.EgressRecord{Name: egress})
-				}
-				for _, nextHop := range entry.NextHops {
-					petEntry.NextHopRecords = append(petEntry.NextHopRecords, &mgmt.NextHopRecord{FaceId: nextHop.FaceID, Cost: nextHop.Cost})
-				}
-				dataset.Entries = append(dataset.Entries, petEntry)
-			}
-			return dataset, nil
-		}
+		return execSimPetMgmtCmd(e.forwarder, cmd, ca, e.appFaceID)
 	case "rib":
 		switch cmd {
 		case "register":
@@ -475,8 +402,8 @@ func (e *SimEngine) ExecMgmtCmd(module string, cmd string, args any) (any, error
 				!strategyName[len(strategyName)-1].IsVersion() {
 				strategyName = strategyName.Append(enc.NewVersionComponent(1))
 			}
-			// Use the per-node multicast strategy table rather than the process-wide
-			// global table.MulticastStrategyTable, which would affect all nodes.
+			// Use the phase-aware per-node multicast state rather than any
+			// process-wide forwarding table.
 			e.forwarder.SetMulticastStrategy(ca.Name, strategyName)
 			return &mgmt.ControlResponse{Val: &mgmt.ControlResponseVal{StatusCode: 200}}, nil
 		}
@@ -489,14 +416,15 @@ func (e *SimEngine) ExecMgmtCmd(module string, cmd string, args any) (any, error
 func (e *SimEngine) SetCmdSec(signer ndn.Signer, validator func(enc.Name, enc.Wire, ndn.Signature) bool) {
 }
 
-// RegisterRoute exposes a local application prefix through PET, matching the
-// production engine behavior on dv2.
+// RegisterRoute exposes a local application prefix through the phase-appropriate
+// forwarding tables.
 func (e *SimEngine) RegisterRoute(prefix enc.Name) error {
 	e.forwarder.AddDirectRoute(prefix, e.appFaceID, 0)
 	return nil
 }
 
-// UnregisterRoute removes a local application prefix from PET/FIB.
+// UnregisterRoute removes a local application prefix from the phase-appropriate
+// forwarding tables.
 func (e *SimEngine) UnregisterRoute(prefix enc.Name) error {
 	e.forwarder.RemoveDirectRoute(prefix, e.appFaceID)
 	return nil

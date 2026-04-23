@@ -13,7 +13,9 @@
 // The tool:
 //  1. Copies --src to --out.
 //  2. Applies AST rewrites to the target packages inside --out.
-//  3. Copies every file from --overlay/{pkg-path}/ into --out/{pkg-path}/.
+//  3. Copies only net-new files from --overlay/{pkg-path}/ into
+//     --out/{pkg-path}/. If an overlay file would replace an upstream file,
+//     the transform fails and the change must move into the transformer.
 //  4. Adds a `require` + `replace` for the ndndsim module in --out/go.mod.
 package main
 
@@ -24,6 +26,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func main() {
@@ -53,7 +56,7 @@ func main() {
 		}
 	}
 
-	// 3. Copy overlay files.
+	// 3. Copy net-new overlay files.
 	if err := applyOverlay(*overlayDir, *out); err != nil {
 		fatalf("overlay: %v", err)
 	}
@@ -107,18 +110,50 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// applyOverlay copies every file from overlayDir/{pkg}/ into outDir/{pkg}/.
-// The overlay directory mirrors the package structure of ndnd.
+type overlayFile struct {
+	src string
+	rel string
+}
+
+// applyOverlay copies only net-new files from overlayDir/{pkg}/ into
+// outDir/{pkg}/. The overlay directory mirrors the package structure of ndnd.
+// Replacing an upstream file is treated as an error so that file patches stay
+// in AST rewrites or injected helpers instead of shadow overlays.
 func applyOverlay(overlayDir, outDir string) error {
-	return filepath.WalkDir(overlayDir, func(path string, d fs.DirEntry, err error) error {
+	var additions []overlayFile
+	var collisions []string
+
+	err := filepath.WalkDir(overlayDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		rel, _ := filepath.Rel(overlayDir, path)
 		dst := filepath.Join(outDir, rel)
-		fmt.Printf("  overlay: %s\n", rel)
-		return copyFile(path, dst)
+		if _, err := os.Stat(dst); err == nil {
+			collisions = append(collisions, rel)
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		additions = append(additions, overlayFile{src: path, rel: rel})
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if len(collisions) > 0 {
+		return fmt.Errorf(
+			"overlay attempted to replace upstream files:\n  %s\nmove these patches into the transformer instead of overlay/",
+			strings.Join(collisions, "\n  "),
+		)
+	}
+	for _, file := range additions {
+		fmt.Printf("  overlay: %s\n", file.rel)
+		if err := copyFile(file.src, filepath.Join(outDir, file.rel)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // patchGoMod appends a require + (optional) replace for ndndsim to go.mod.

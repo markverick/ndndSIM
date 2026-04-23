@@ -185,13 +185,14 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
     //
     // Categories:
     //   /localhop/.../32=DV/...           → DvAdvert
-    //   /.../32=DV/32=PFS/...             → PrefixSync
+    //   /.../32=DV/32=PFS/...             → PrefixSync (onephase)
+    //   /.../32=DV/32=PES/...             → PrefixSync (twophase PrefixEgreState)
     //   /localhost/nlsr/...               → Mgmt
     //   else                              → UserInterest or UserData
 
     bool firstIsLocalhost = false;
     bool seenDvKeyword = false;
-    bool seenPfsKeyword = false;
+    bool seenPfxSyncKeyword = false;
     bool secondIsNlsr = false;
     int compIdx = 0;
 
@@ -220,8 +221,8 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
         {
             if (ComponentEquals(cVal, cLen, "DV"))
                 seenDvKeyword = true;
-            if (ComponentEquals(cVal, cLen, "PFS"))
-                seenPfsKeyword = true;
+            if (ComponentEquals(cVal, cLen, "PFS") || ComponentEquals(cVal, cLen, "PES"))
+                seenPfxSyncKeyword = true;
         }
 
         compIdx++;
@@ -230,7 +231,7 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
     // Classify
     if (firstIsLocalhost && secondIsNlsr)
         return TrafficCategory::Mgmt;
-    if (seenDvKeyword && seenPfsKeyword)
+    if (seenDvKeyword && seenPfxSyncKeyword)
         return TrafficCategory::PrefixSync;
     if (seenDvKeyword)
         return TrafficCategory::DvAdvert;

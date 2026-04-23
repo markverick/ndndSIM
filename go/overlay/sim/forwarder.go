@@ -32,19 +32,18 @@ type SimForwarder struct {
 
 	clock Clock
 
-	// Per-node hooks (goroutine-local state: FIB, PET, clock, scheduler).
+	// Per-node hooks (goroutine-local state: forwarding tables, clock, scheduler).
 	hooks *_ndndsim.NodeHooks
 
 	// Per-node RIB (routes go through here so readvertise fires)
 	rib *table.RibTable
 
-	// Per-node FIB and PET: stored here for withNodeFib (which must swap the
-	// global table.FibStrategyTable) and are also registered in the node hooks
-	// so that goroutine-local simFib()/simPet() return the right instances.
+	// Per-node FIB shared across both phases.
 	fib table.FibStrategy
-	pet *table.PrefixEgressTable
+	pet any
 
-	// Per-node multicast strategy table.
+	// twophase keeps a separate multicast table; onephase leaves this nil and
+	// uses the ordinary FIB as a best-effort substitute.
 	multicastFib table.FibStrategy
 
 	// Per-node face table (face ID -> DispatchFace)
@@ -63,20 +62,15 @@ type SimForwarder struct {
 }
 
 // NewSimForwarder creates a new simulation forwarder backed by a real fw.Thread.
-// Each simulated node should have its own SimForwarder.  The provided hooks
-// receive the per-node Fib and Pet so that goroutine-local simFib()/simPet()
-// return the correct instances after BindNode is called.
+// Each simulated node should have its own SimForwarder. Phase-specific PET and
+// multicast tables are attached by helper constructors from overlay-op/tw.
 func NewSimForwarder(clock Clock, hooks *_ndndsim.NodeHooks) *SimForwarder {
 	rib := &table.RibTable{}
 	rib.InitRoot()
 
 	fib := table.NewFibStrategyTree()
-	pet := table.NewPrefixEgressTable()
-
-	// Register per-node FIB, PET, and multicast FIB in hooks so that
-	// goroutine-local simFib()/simPet()/simMulticastFib() return the correct
-	// instances after BindNode is called.
-	multicastFib := table.NewMulticastStrategyTree()
+	pet := newSimPet()
+	multicastFib := newSimMulticastFib()
 	hooks.Fib = fib
 	hooks.Pet = pet
 	hooks.MulticastFib = multicastFib
@@ -86,22 +80,17 @@ func NewSimForwarder(clock Clock, hooks *_ndndsim.NodeHooks) *SimForwarder {
 		hooks:        hooks,
 		fib:          fib,
 		pet:          pet,
+		multicastFib: multicastFib,
 		faces:        make(map[uint64]*DispatchFace),
 		rib:          rib,
-		multicastFib: multicastFib,
 	}
 
 	// Create a real forwarding thread (ID 0 -- single-threaded in sim).
-	// Per-node FIB/PET isolation is handled via goroutine-local hooks;
-	// no SetFib/SetPet calls are needed.
 	fwd.thread = fw.NewThread(0)
-
-	// In the current dv2-sim fork, thread.go still reads t.fib / t.pet struct
-	// fields via t.Fib() / t.Pet().  Keep those set so the fork's forwarding
-	// pipeline uses the per-node instances.  Once ndnd is cleaned up and the
-	// transformer produces the final binary these calls can be removed.
 	fwd.thread.SetFib(fib)
-	fwd.thread.SetPet(pet)
+	if pet != nil {
+		attachSimPetThread(fwd.thread, pet)
+	}
 
 	return fwd
 }
@@ -163,7 +152,9 @@ func (fwd *SimForwarder) RemoveFace(id uint64) {
 	fwd.withNodeFib(func() {
 		fwd.rib.CleanUpFace(id)
 	})
-	fwd.pet.CleanUpFace(id)
+	if fwd.pet != nil {
+		cleanUpSimPetFace(fwd.pet, id)
+	}
 	// Remove nexthops for this face from the per-node FIB.
 	if fc, ok := fwd.fib.(faceCleanable); ok {
 		fc.CleanUpFace(id)
@@ -230,10 +221,13 @@ func (fwd *SimForwarder) withNodeFib(f func()) {
 	f()
 }
 
-// SetMulticastStrategy sets the multicast forwarding strategy for a prefix on this
-// node's per-node multicast strategy table.
+// SetMulticastStrategy sets the phase-appropriate multicast forwarding state.
 func (fwd *SimForwarder) SetMulticastStrategy(prefix enc.Name, strategy enc.Name) {
-	fwd.multicastFib.SetStrategyEnc(prefix, strategy)
+	if fwd.multicastFib != nil {
+		fwd.multicastFib.SetStrategyEnc(prefix, strategy)
+		return
+	}
+	fwd.fib.SetStrategyEnc(prefix, strategy)
 }
 
 // AddRoute adds a route through this node's RIB so that readvertise fires.
@@ -242,10 +236,11 @@ func (fwd *SimForwarder) AddRoute(name enc.Name, faceID uint64, cost uint64) {
 }
 
 // AddDirectRoute installs a direct prefix route for simulation users.
-// dv2 forwarding resolves ordinary application traffic through PET, so we
-// mirror legacy ndndSIM AddRoute semantics by populating both PET and FIB.
+// twophase mirrors the route into PET; onephase updates only the FIB.
 func (fwd *SimForwarder) AddDirectRoute(name enc.Name, faceID uint64, cost uint64) {
-	fwd.pet.AddNextHopEnc(name, faceID, cost)
+	if fwd.pet != nil {
+		addSimPetNextHop(fwd.pet, name, faceID, cost)
+	}
 	fwd.fib.InsertNextHopEnc(name, faceID, cost)
 	fwd.AddRouteWithOrigin(name, faceID, cost, 0)
 }
@@ -280,7 +275,9 @@ func (fwd *SimForwarder) RemoveRoute(name enc.Name, faceID uint64) {
 
 // RemoveDirectRoute removes a direct prefix route installed for simulation.
 func (fwd *SimForwarder) RemoveDirectRoute(name enc.Name, faceID uint64) {
-	fwd.pet.RemoveNextHopEnc(name, faceID)
+	if fwd.pet != nil {
+		removeSimPetNextHop(fwd.pet, name, faceID)
+	}
 	fwd.fib.RemoveNextHopEnc(name, faceID)
 	fwd.RemoveRouteWithOrigin(name, faceID, 0)
 }
@@ -356,12 +353,8 @@ func (fwd *SimForwarder) ReceivePacket(faceID uint64, frame []byte) {
 		pkt.Name = pkt.L3.Data.NameV
 	}
 
-	// Synchronously process through the real forwarding pipeline.
-	// withNodeFib sets the global FibStrategyTable/MulticastStrategyTable/Pet
-	// to this node's per-node instances. This is required so that both the
-	// forwarding pipeline (thread.Fib()/Pet()) AND NFD management handlers
-	// (which call table.FibStrategyTable.InsertNextHopEnc / table.Pet.AddNextHop
-	// directly) operate on the correct per-node state.
+	// Synchronously process through the real forwarding pipeline with this
+	// node's hook-bound forwarding tables.
 	fwd.withNodeFib(func() {
 		fwd.thread.ProcessPacket(pkt)
 	})

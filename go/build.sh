@@ -10,8 +10,8 @@
 #   2. Runs the AST transformer to patch the copy and apply overlay files.
 #      The overlay/ directory contains sim/ and all sim-specific additions
 #      to ndnd core packages.
-#      For onephase builds, overlay-op/ files are applied on top to override
-#      phase-specific files (e.g. sim/forwarder.go without PET).
+#      For onephase and twophase builds, overlay-op/ and overlay-tw/ provide
+#      phase-specific net-new files only.
 #   3. Generates a go.work that ties together ndndsim, the transformer, and
 #      the transformed ndnd (which now includes sim/).
 #   4. Builds the CGo simulation library and runs sim tests.
@@ -61,6 +61,42 @@ if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
     GO="$(command -v go)"
 fi
 
+copy_overlay_additions() {
+    local src_dir="$1"
+    local dst_dir="$2"
+    local label="$3"
+    local -a collisions=()
+
+    [[ -d "$src_dir" ]] || return 0
+
+    while IFS= read -r -d '' src; do
+        local rel="${src#$src_dir/}"
+        local dst="$dst_dir/$rel"
+        if [[ -e "$dst" ]]; then
+            collisions+=("$rel")
+        fi
+    done < <(find "$src_dir" -type f -print0 | sort -z)
+
+    if (( ${#collisions[@]} > 0 )); then
+        {
+            echo "overlay collision: ${label} would replace transformed upstream files:"
+            for rel in "${collisions[@]}"; do
+                echo "  - $rel"
+            done
+            echo "move these patches into the transformer instead of ${label}/"
+        } >&2
+        return 1
+    fi
+
+    while IFS= read -r -d '' src; do
+        local rel="${src#$src_dir/}"
+        local dst="$dst_dir/$rel"
+        mkdir -p "$(dirname "$dst")"
+        echo "  ${label}: $rel"
+        cp "$src" "$dst"
+    done < <(find "$src_dir" -type f -print0 | sort -z)
+}
+
 # ---------- step 1: clean worktree ----------
 WORK_DIR="$(mktemp -d)"
 
@@ -75,12 +111,9 @@ else
 fi
 
 # ---------- step 2: transform + overlay ----------
-# The overlay/ directory provides:
-#   - All sim-specific additions to ndnd core packages (fw/, dv/, std/sync/)
-#   - The entire sim/ package (CGo library + simulation engine)
-# The transformer applies targeted AST patches (go→_ndndsim.Go, time.Now→
-# _ndndsim.Now, etc.) to the pristine source; overlay files are applied after.
-# For onephase builds, overlay-op/ files override phase-specific overlay files.
+# The overlay/ directory provides only net-new files such as the sim/ package.
+# Any patch to an upstream ndnd file must live in the transformer so the build
+# never silently replaces pristine sources.
 echo "==> Transforming ndnd source and applying overlay (phase: ${NDND_PHASE})"
 cd "${SCRIPT_DIR}/transform"
 GOWORK=off ${GO} run . \
@@ -91,12 +124,19 @@ GOWORK=off ${GO} run . \
     --sim-module "github.com/named-data/ndndsim" \
     --sim-module-dir "${SCRIPT_DIR}/ndndsim"
 
-# Apply phase-specific overlay patches on top (if the directory exists).
-# For onephase this overrides sim/forwarder.go (removes PET references).
+# Apply phase-specific net-new overlay additions on top (if the directory exists).
 if [[ -d "${SCRIPT_DIR}/overlay-op" ]]; then
     echo "==> Applying overlay-op patches for phase: ${NDND_PHASE}"
     if [[ "$NDND_PHASE" == "onephase" ]]; then
-        cp -r "${SCRIPT_DIR}/overlay-op/." "$TRANSFORMED_DIR/"
+        copy_overlay_additions "${SCRIPT_DIR}/overlay-op" "$TRANSFORMED_DIR" "overlay-op"
+    fi
+fi
+
+# Apply twophase-only net-new overlay additions (if the directory exists).
+if [[ -d "${SCRIPT_DIR}/overlay-tw" ]]; then
+    echo "==> Applying overlay-tw patches for phase: ${NDND_PHASE}"
+    if [[ "$NDND_PHASE" == "twophase" ]]; then
+        copy_overlay_additions "${SCRIPT_DIR}/overlay-tw" "$TRANSFORMED_DIR" "overlay-tw"
     fi
 fi
 

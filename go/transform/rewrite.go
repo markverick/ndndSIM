@@ -39,6 +39,7 @@ ruleSimTicker                                 // *time.Ticker field → *simTick
 ruleStorageNewMemoryStore                     // storage.NewMemoryStore() → simNewStore()
 ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib().Foo  (within fw/table pkg)
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
+rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() to postUpdateRib
 
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
@@ -46,6 +47,7 @@ ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
 ruleInjectPetConstructor              // fw/table/pet.go
 ruleInjectRibSimFunctions             // fw/table/rib.go  (needs _ndndsim import)
 ruleInjectSvsSimExtensions            // std/sync/svs.go
+ruleSvsDeterministicRng               // std/sync/svs.go: per-instance seeded RNG
 ruleInjectSvsAloSimExtensions         // std/sync/svs_alo.go
 ruleSvsChannels                       // std/sync/svs.go: recvSv/stop sends → sim methods
 ruleSvsAloChannels                    // std/sync/svs_alo.go: stop/publpipe sends → sim methods
@@ -96,13 +98,14 @@ pkg("fw/table", map[string][]fileRule{
 // Fixes lastSeen tracking and IsDead() in neighbor_table.go.
 pkg("dv/table", map[string][]fileRule{}),
 pkg("dv/dv", map[string][]fileRule{
+	"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp},
 }),
 pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
 }),
 pkg("std/sync", map[string][]fileRule{
-"svs.go":          {ruleSimTicker, ruleInjectSvsSimExtensions, ruleSvsChannels},
+"svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
 "svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
 "svs_alo_data.go": {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
 }),
@@ -131,6 +134,7 @@ pkg("dv/table", map[string][]fileRule{}),
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
+	"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
 "prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions},
 }),
@@ -140,7 +144,7 @@ pkg("dv/nfdc", map[string][]fileRule{
 }),
 // std/sync: eliminate goroutines via direct-delivery sim helpers.
 	pkg("std/sync", map[string][]fileRule{
-		"svs.go":          {ruleSimTicker, ruleInjectSvsSimExtensions, ruleSvsChannels},
+		"svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
 		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
 			"svs_alo_data.go": {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
 }),
@@ -214,6 +218,9 @@ modified = applyFibGlobalPointerInternal(file) || modified
 case ruleDeadNonceListMutex:
 modified = applyDeadNonceListMutex(file, fset) || modified
 
+		case rulePostUpdateRibConvergenceHook:
+			modified = applyPostUpdateRibConvergenceHook(file) || modified
+
 // --- Code-injection rules ---
 
 case ruleInjectFibStrategyTreeExtensions:
@@ -235,6 +242,9 @@ ndndsimUsed = true
 case ruleInjectSvsSimExtensions:
 // _ndndsim, time, sync/atomic already imported in svs.go.
 modified = applySvsSimExtensions(file, fset) || modified
+
+		case ruleSvsDeterministicRng:
+			modified = applySvsDeterministicRNG(file) || modified
 		case ruleInjectSvsAloSimExtensions:
 			modified = applySvsAloSimExtensions(file, fset) || modified
 

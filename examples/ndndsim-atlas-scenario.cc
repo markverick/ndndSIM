@@ -141,19 +141,23 @@ main(int argc, char* argv[])
 
     // ─── Run ───────────────────────────────────────────────────────
 
+    // Set expected node count so NdndSimGetRoutingConvergenceNs knows when
+    // all nodes have converged (every node reachable by every other node).
+    NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
+
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
-    // Write convergence time to file (if requested)
+    // Write convergence time to file (if requested).
+    // Uses router-reachability events (works in both one-phase and two-phase).
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
-        auto pfx = prefix;
-        int64_t spanNs = NdndSimGetDvUpdateSpanNs(const_cast<char*>(pfx.c_str()),
-                                                  static_cast<int>(pfx.size()));
-        if (spanNs >= 0)
+        int64_t convNs = NdndSimGetRoutingConvergenceNs(
+            static_cast<int>(nodes.GetN()));
+        if (convNs >= 0)
         {
-            ofs << (static_cast<double>(spanNs) / 1e9) << std::endl;
+            ofs << (static_cast<double>(convNs) / 1e9) << std::endl;
         }
         else
         {
