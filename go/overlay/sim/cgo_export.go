@@ -1,6 +1,8 @@
 package sim
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -686,6 +688,43 @@ func NdndSimGetDvSuppressionStats(nodeId C.uint32_t, enter *C.uint64_t, ok *C.ui
 	*ok = C.uint64_t(stats.Ok)
 	*fail = C.uint64_t(stats.Fail)
 	return 0
+}
+
+func tableMetricsReport(node *Node) string {
+	metrics := node.Forwarder.SimTableMetrics()
+	if dv := node.DvRouter(); dv != nil {
+		metrics = append(metrics, dv.Router().SimTableMetrics()...)
+	}
+
+	var builder strings.Builder
+	for _, metric := range metrics {
+		builder.WriteString(metric.Category)
+		builder.WriteByte(',')
+		builder.WriteString(metric.Table)
+		builder.WriteByte(',')
+		builder.WriteString(strconv.Itoa(metric.EntryCount))
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
+//export NdndSimGetTableMetricsReport
+func NdndSimGetTableMetricsReport(nodeId C.uint32_t) *C.char {
+	if globalRuntime == nil {
+		return nil
+	}
+	node := globalRuntime.GetNode(uint32(nodeId))
+	if node == nil {
+		return nil
+	}
+	return C.CString(tableMetricsReport(node))
+}
+
+//export NdndSimFreeCString
+func NdndSimFreeCString(value *C.char) {
+	if value != nil {
+		C.free(unsafe.Pointer(value))
+	}
 }
 
 //export NdndSimAnnouncePrefixToDv

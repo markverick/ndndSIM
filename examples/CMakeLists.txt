@@ -161,3 +161,15 @@ build_lib_example(
         ${libinternet}
         ${libpoint-to-point}
 )
+
+# Atlas core-edge prefix-scale scenario
+build_lib_example(
+    NAME ndndsim-atlas-prefix-scale-scenario
+    SOURCE_FILES ndndsim-atlas-prefix-scale-scenario.cc
+    LIBRARIES_TO_LINK
+        ${libndndSIM}
+        ${libcore}
+        ${libnetwork}
+        ${libinternet}
+        ${libpoint-to-point}
+)

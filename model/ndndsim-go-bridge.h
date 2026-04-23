@@ -155,6 +155,13 @@ extern "C"
                                             uint64_t* ok,
                                             uint64_t* fail);
 
+    /** Get a newline-separated per-table metrics report for a node.
+     *  Each line is: category,table,entry_count */
+    extern char* NdndSimGetTableMetricsReport(uint32_t nodeId);
+
+    /** Free a string returned by NdndSimGetTableMetricsReport. */
+    extern void NdndSimFreeCString(char* value);
+
     /** Get DV convergence for a prefix as
      *  (last AddRemotePrefix receive time - first GlobalAnnounce origin time),
      *  in nanoseconds of simulation time. Returns -1 if unavailable. */

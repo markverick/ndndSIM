@@ -98,6 +98,12 @@ class NdndStack : public Object
      */
     bool GetDvSuppressionStats(uint64_t& enter, uint64_t& ok, uint64_t& fail) const;
 
+    /**
+     * Get a newline-separated per-table metrics report for this node.
+      * Each line is: category,table,entry_count.
+     */
+    std::string GetTableMetricsReport() const;
+
   protected:
     void DoDispose() override;
     void NotifyNewAggregate() override;

@@ -250,5 +250,24 @@ NdndStack::GetDvSuppressionStats(uint64_t& enter, uint64_t& ok, uint64_t& fail) 
     return NdndSimGetDvSuppressionStats(m_node->GetId(), &enter, &ok, &fail) == 0;
 }
 
+std::string
+NdndStack::GetTableMetricsReport() const
+{
+    if (!m_installed || !m_node)
+    {
+        return "";
+    }
+
+    char* report = NdndSimGetTableMetricsReport(m_node->GetId());
+    if (report == nullptr)
+    {
+        return "";
+    }
+
+    std::string text(report);
+    NdndSimFreeCString(report);
+    return text;
+}
+
 } // namespace ndndsim
 } // namespace ns3
