@@ -1,1 +1,5 @@
 examples/topologies/topo-*-atlas.txt
+go/.transformed-ndnd-*/
+go/libndndsim-*.a
+go/go.work.sum
+go/transform/transform_test_bin
