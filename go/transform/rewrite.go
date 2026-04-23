@@ -40,6 +40,7 @@ ruleStorageNewMemoryStore                     // storage.NewMemoryStore() → si
 ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib().Foo  (within fw/table pkg)
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
 rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() to postUpdateRib
+rulePrefixEventHooks                          // dv/table prefix announce/add hooks for convergence metrics
 
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
@@ -97,6 +98,9 @@ pkg("fw/table", map[string][]fileRule{
 // time.Since→_ndndsim.Now().Sub, go→_ndndsim.Go) to all files.
 // Fixes lastSeen tracking and IsDead() in neighbor_table.go.
 pkg("dv/table", map[string][]fileRule{}),
+pkg("dv/table", map[string][]fileRule{
+"prefix_table.go": {rulePrefixEventHooks},
+}),
 pkg("dv/dv", map[string][]fileRule{
 	"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp},
@@ -131,6 +135,9 @@ pkg("fw/table", map[string][]fileRule{
 // time.Since→_ndndsim.Now().Sub, go→_ndndsim.Go) to all files.
 // Fixes lastSeen tracking and IsDead() in neighbor_table.go.
 pkg("dv/table", map[string][]fileRule{}),
+pkg("dv/table", map[string][]fileRule{
+"prefix_state.go": {rulePrefixEventHooks},
+}),
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
@@ -220,6 +227,12 @@ modified = applyDeadNonceListMutex(file, fset) || modified
 
 		case rulePostUpdateRibConvergenceHook:
 			modified = applyPostUpdateRibConvergenceHook(file) || modified
+
+		case rulePrefixEventHooks:
+			if applyPrefixEventHooks(file) {
+				modified = true
+				ndndsimUsed = true
+			}
 
 // --- Code-injection rules ---
 

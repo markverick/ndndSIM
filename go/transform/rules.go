@@ -628,6 +628,257 @@ func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
 	return false
 }
 
+func applyPrefixEventHooks(file *ast.File) bool {
+	modified := false
+
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+
+		switch fd.Name.Name {
+		case "publishEntry":
+			if injectNotifyAfterMatchingLog(
+				fd.Body,
+				func(call *ast.CallExpr) bool {
+					return callUsesKind(call, "PrefixEventGlobalAnnounce")
+				},
+				func(_ *ast.CallExpr) ast.Stmt {
+					return makeNotifyPrefixEventStmt(
+						"PrefixEventGlobalAnnounce",
+						selectorExpr(ast.NewIdent("entry"), "Name"),
+						&ast.CallExpr{Fun: &ast.SelectorExpr{
+							X:   &ast.SelectorExpr{X: ast.NewIdent("pt"), Sel: ast.NewIdent("config")},
+							Sel: ast.NewIdent("RouterName"),
+						}},
+					)
+				},
+			) {
+				modified = true
+			}
+
+		case "publishAdd":
+			if injectNotifyAfterMatchingLog(
+				fd.Body,
+				func(call *ast.CallExpr) bool {
+					return callUsesKind(call, "PrefixEventGlobalAnnounce")
+				},
+				func(_ *ast.CallExpr) ast.Stmt {
+					return makeNotifyPrefixEventStmt(
+						"PrefixEventGlobalAnnounce",
+						selectorExpr(ast.NewIdent("entry"), "Name"),
+						&ast.CallExpr{Fun: &ast.SelectorExpr{
+							X:   &ast.SelectorExpr{X: ast.NewIdent("pt"), Sel: ast.NewIdent("config")},
+							Sel: ast.NewIdent("RouterName"),
+						}},
+					)
+				},
+			) {
+				modified = true
+			}
+
+		case "Apply":
+			if injectNotifyInsidePrefixAddLoop(fd.Body) {
+				modified = true
+			}
+		}
+	}
+
+	return modified
+}
+
+func injectNotifyInsidePrefixAddLoop(body *ast.BlockStmt) bool {
+	modified := false
+	astutil.Apply(body, func(c *astutil.Cursor) bool {
+		loop, ok := c.Node().(*ast.RangeStmt)
+		if !ok || loop.Body == nil {
+			return true
+		}
+		selector, ok := loop.X.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "PrefixOpAdds" {
+			return true
+		}
+		if ident, ok := loop.Value.(*ast.Ident); !ok || ident.Name != "add" {
+			return true
+		}
+		if blockHasNotifyPrefixEvent(loop.Body, "PrefixEventAddRemotePrefix") {
+			return true
+		}
+
+		for idx, stmt := range loop.Body.List {
+			call, ok := logInfoCall(stmt)
+			if !ok || !callHasStringArg(call, "Add remote prefix") {
+				continue
+			}
+
+			routerExpr := findRouterNameExpr(call)
+			if routerExpr == nil {
+				return true
+			}
+
+			notify := makeNotifyPrefixEventStmt(
+				"PrefixEventAddRemotePrefix",
+				selectorExpr(ast.NewIdent("add"), "Name"),
+				routerExpr,
+			)
+			loop.Body.List = append(loop.Body.List[:idx+1], append([]ast.Stmt{notify}, loop.Body.List[idx+1:]...)...)
+			modified = true
+			return false
+		}
+
+		return true
+	}, nil)
+	return modified
+}
+
+func injectNotifyAfterMatchingLog(body *ast.BlockStmt, alreadyPresent func(*ast.CallExpr) bool, makeStmt func(*ast.CallExpr) ast.Stmt) bool {
+	modified := false
+	astutil.Apply(body, func(c *astutil.Cursor) bool {
+		block, ok := c.Node().(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		if blockHasNotifyPrefixEvent(block, "PrefixEventGlobalAnnounce") {
+			return false
+		}
+		for idx, stmt := range block.List {
+			call, ok := logInfoCall(stmt)
+			if !ok || !callHasStringArg(call, "Global announce") || alreadyPresent(call) {
+				continue
+			}
+			notify := makeStmt(call)
+			block.List = append(block.List[:idx+1], append([]ast.Stmt{notify}, block.List[idx+1:]...)...)
+			modified = true
+			return false
+		}
+		return true
+	}, nil)
+	return modified
+}
+
+func blockHasNotifyPrefixEvent(block *ast.BlockStmt, kindName string) bool {
+	for _, stmt := range block.List {
+		es, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+		call, ok := es.X.(*ast.CallExpr)
+		if !ok || !callUsesKind(call, kindName) {
+			continue
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "NotifyPrefixEvent" {
+			return true
+		}
+	}
+	return false
+}
+
+func callUsesKind(call *ast.CallExpr, kindName string) bool {
+	if len(call.Args) != 1 {
+		return false
+	}
+	cl, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	for _, elt := range cl.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Kind" {
+			continue
+		}
+		ident, ok := kv.Value.(*ast.Ident)
+		return ok && ident.Name == kindName
+	}
+	return false
+}
+
+func logInfoCall(stmt ast.Stmt) (*ast.CallExpr, bool) {
+	es, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return nil, false
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return nil, false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Info" {
+		return nil, false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok || id.Name != "log" {
+		return nil, false
+	}
+	return call, true
+}
+
+func callHasStringArg(call *ast.CallExpr, value string) bool {
+	for _, arg := range call.Args {
+		lit, ok := arg.(*ast.BasicLit)
+		if ok && lit.Value == "\""+value+"\"" {
+			return true
+		}
+	}
+	return false
+}
+
+func findRouterNameExpr(call *ast.CallExpr) ast.Expr {
+	for idx := 0; idx+1 < len(call.Args); idx++ {
+		key, ok := call.Args[idx].(*ast.BasicLit)
+		if !ok || key.Value != "\"router\"" {
+			continue
+		}
+		return call.Args[idx+1]
+	}
+	return nil
+}
+
+func makeNotifyPrefixEventStmt(kindName string, nameExpr, routerExpr ast.Expr) ast.Stmt {
+	return &ast.ExprStmt{X: &ast.CallExpr{
+		Fun: ast.NewIdent("NotifyPrefixEvent"),
+		Args: []ast.Expr{&ast.CompositeLit{
+			Type: ast.NewIdent("PrefixEvent"),
+			Elts: []ast.Expr{
+				&ast.KeyValueExpr{Key: ast.NewIdent("Kind"), Value: ast.NewIdent(kindName)},
+				&ast.KeyValueExpr{Key: ast.NewIdent("At"), Value: &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("_ndndsim"), Sel: ast.NewIdent("Now")}}},
+				&ast.KeyValueExpr{Key: ast.NewIdent("Name"), Value: cloneExpr(nameExpr)},
+				&ast.KeyValueExpr{Key: ast.NewIdent("Router"), Value: cloneExpr(routerExpr)},
+			},
+		}},
+	}}
+}
+
+func selectorExpr(x ast.Expr, name string) ast.Expr {
+	return &ast.SelectorExpr{X: x, Sel: ast.NewIdent(name)}
+}
+
+func cloneExpr(expr ast.Expr) ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return ast.NewIdent(e.Name)
+	case *ast.SelectorExpr:
+		return &ast.SelectorExpr{X: cloneExpr(e.X), Sel: ast.NewIdent(e.Sel.Name)}
+	case *ast.CallExpr:
+		args := make([]ast.Expr, len(e.Args))
+		for i, arg := range e.Args {
+			args[i] = cloneExpr(arg)
+		}
+		return &ast.CallExpr{Fun: cloneExpr(e.Fun), Args: args}
+	case *ast.BasicLit:
+		return &ast.BasicLit{Kind: e.Kind, Value: e.Value}
+	default:
+		panic("unsupported cloneExpr node")
+	}
+}
+
 func blockHasSelectorCall(block *ast.BlockStmt, recvName, methodName string) bool {
 	for _, stmt := range block.List {
 		es, ok := stmt.(*ast.ExprStmt)
