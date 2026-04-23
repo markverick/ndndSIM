@@ -6,7 +6,7 @@
 //
 //	ndnd-transform \
 //	    --src  /path/to/upstream/ndnd \
-//	    --out  /path/to/.transformed-ndnd \
+//	    --out  /path/to/.transformed-ndnd-twophase \
 //	    --overlay /path/to/ndndSIM/go/overlay \
 //	    --sim-module github.com/named-data/ndndsim
 //
