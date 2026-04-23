@@ -5,8 +5,11 @@
  * consumer and producer, and writes a rate trace CSV.
  *
  * Convergence detection: direct DV event-span measurement in simulated time.
- * We export (last Add remote prefix receive time - first Global announce
- * origin time) for the configured app prefix into --convTrace.
+ * We export both of the following into --convTrace:
+ *   - prefix_propagation_s: last Add remote prefix receive time minus first
+ *     Global announce origin time for the configured app prefix
+ *   - router_reachability_s: routing convergence span from RouterReachable
+ *     events across all DV nodes
  *
  * All parameters are configurable via command line — no need to
  * regenerate C++ source for different topologies or settings.
@@ -144,21 +147,36 @@ main(int argc, char* argv[])
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
-    // Write convergence time to file (if requested)
+    // Write convergence metrics to file (if requested)
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
         auto pfx = prefix;
-        int64_t spanNs = NdndSimGetDvUpdateSpanNs(const_cast<char*>(pfx.c_str()),
-                                                  static_cast<int>(pfx.size()));
-        if (spanNs >= 0)
+        int64_t prefixSpanNs = NdndSimGetDvUpdateSpanNs(const_cast<char*>(pfx.c_str()),
+                                                        static_cast<int>(pfx.size()));
+        int64_t routingConvNs = NdndSimGetRoutingConvergenceNs(static_cast<int>(nodes.GetN()));
+
+        ofs << "prefix_propagation_s=";
+        if (prefixSpanNs >= 0)
         {
-            ofs << (static_cast<double>(spanNs) / 1e9) << std::endl;
+            ofs << (static_cast<double>(prefixSpanNs) / 1e9);
         }
         else
         {
-            ofs << -1 << std::endl;
+            ofs << -1;
         }
+        ofs << std::endl;
+
+        ofs << "router_reachability_s=";
+        if (routingConvNs >= 0)
+        {
+            ofs << (static_cast<double>(routingConvNs) / 1e9);
+        }
+        else
+        {
+            ofs << -1;
+        }
+        ofs << std::endl;
     }
 
     if (linkTracer)
