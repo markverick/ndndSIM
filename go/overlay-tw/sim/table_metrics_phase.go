@@ -16,13 +16,7 @@ func (fwd *SimForwarder) simPhaseTableMetrics() []dv.SimTableMetric {
 		})
 	}
 
-	if fwd.multicastFib != nil {
-		metrics = append(metrics, dv.SimTableMetric{
-			Category:   dv.SimTableCategoryTwoPhase,
-			Table:      "forwarder_multicast_fib",
-			EntryCount: fwd.multicastFib.GetNumFIBEntries(),
-		})
-	}
+
 
 	return metrics
 }

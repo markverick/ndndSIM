@@ -14,7 +14,7 @@ func (fwd *SimForwarder) SimTableMetrics() []dv.SimTableMetric {
 		{
 			Category:   dv.SimTableCategoryCommon,
 			Table:      "forwarder_fib",
-			EntryCount: fwd.fib.GetNumFIBEntries(),
+			EntryCount: len(fwd.fib.GetAllFIBEntries()),
 		},
 	}
 	return append(metrics, fwd.simPhaseTableMetrics()...)

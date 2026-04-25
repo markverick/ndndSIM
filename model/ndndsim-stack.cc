@@ -157,6 +157,19 @@ NdndStack::RemoveRoute(const std::string& prefix, uint64_t faceId)
 }
 
 void
+NdndStack::RegisterProducer(const std::string& prefix)
+{
+    NS_ASSERT_MSG(m_installed, "NdndStack not installed");
+
+    std::string p = prefix;
+    NdndSimRegisterProducer(m_node->GetId(),
+                             const_cast<char*>(p.c_str()),
+                             static_cast<int>(p.size()),
+                             0,   // payloadSize: 0 = no data app, routing-only
+                             0);  // freshnessMs: 0
+}
+
+void
 NdndStack::AnnouncePrefixToDv(const std::string& prefix)
 {
     NS_ASSERT_MSG(m_installed, "NdndStack not installed");
