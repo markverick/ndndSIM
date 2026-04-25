@@ -325,6 +325,8 @@ func (fwd *SimForwarder) ReceivePacket(faceID uint64, frame []byte) {
 		pkt.PitToken = lp.PitToken
 		pkt.CongestionMark = lp.CongestionMark
 		pkt.NextHopFaceID = lp.NextHopFaceId
+		// Decode EgressRouter from the LP header (twophase only; no-op in onephase).
+		decodeEgressRouter(fwd, pkt, lp)
 
 		fragment := lp.Fragment
 		if len(fragment) == 0 {

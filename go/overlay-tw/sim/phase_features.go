@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 
+	"github.com/named-data/ndnd/fw/defn"
 	"github.com/named-data/ndnd/fw/fw"
 	"github.com/named-data/ndnd/fw/table"
 	enc "github.com/named-data/ndnd/std/encoding"
@@ -32,6 +33,30 @@ func addSimPetNextHop(pet any, name enc.Name, faceID uint64, cost uint64) {
 
 func removeSimPetNextHop(pet any, name enc.Name, faceID uint64) {
 	pet.(*table.PrefixEgressTable).RemoveNextHopEnc(name, faceID)
+}
+
+// decodeEgressRouter copies the EgressRouter from an incoming LP header into
+// the packet, then strips it if it names this node so the forwarding pipeline
+// takes fwUnicastIngress (→ PET lookup → local delivery) rather than
+// fwUnicastTransit (FIB-only, drops without a matching PIT entry).
+// In the simulation CfgRouterName() always returns false because
+// core.C.Fw.RouterName is never set; we use hooks.RouterName instead.
+func decodeEgressRouter(fwd *SimForwarder, pkt *defn.Pkt, lp *defn.FwLpPacket) {
+	if lp.EgressRouter != nil {
+		pkt.EgressRouter = lp.EgressRouter.Name
+	}
+	if rn, ok := fwd.hooks.RouterName.(enc.Name); ok && len(rn) > 0 && len(pkt.EgressRouter) > 0 && pkt.EgressRouter.Equal(rn) {
+		pkt.EgressRouter = nil
+	}
+}
+
+// encodeEgressRouter writes the EgressRouter into an outgoing LP header for
+// Interest packets that have one set (i.e., those routed via a PET egress
+// entry). Transit nodes use this to forward via FIB when they lack a PET entry.
+func encodeEgressRouter(lpFrag *defn.FwLpPacket, pkt *defn.Pkt) {
+	if pkt.L3.Interest != nil && len(pkt.EgressRouter) > 0 {
+		lpFrag.EgressRouter = &defn.FwEgressRouter{Name: pkt.EgressRouter}
+	}
 }
 
 func execSimPetMgmtCmd(fwd *SimForwarder, cmd string, ca *mgmt.ControlArgs, appFaceID uint64) (any, error) {

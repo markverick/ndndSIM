@@ -90,6 +90,9 @@ func (f *DispatchFace) SendPacket(out dispatch.OutPkt) {
 		PitToken: out.PitToken,
 	}
 
+	// Encode EgressRouter into the LP header (twophase only; no-op in onephase).
+	encodeEgressRouter(lpFrag, out.Pkt)
+
 	// Include IncomingFaceId for local (app) faces so DV handlers
 	// can identify which link face the Interest originally arrived on.
 	if f.scope == defn.Local && out.InFace > 0 {

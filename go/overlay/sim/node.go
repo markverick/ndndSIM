@@ -335,6 +335,12 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 		return err
 	}
 
+	// Record the router name in the per-node hooks so that ReceivePacket can
+	// strip self-addressed EgressRouter before the pipeline decision, causing
+	// the packet to take fwUnicastIngress (→ PET lookup → local delivery)
+	// instead of fwUnicastTransit (FIB-only, drops without a PIT entry).
+	n.hooks.RouterName = cfg.RouterName()
+
 	// Replicate production createFaces(): register /localhop/neighbors on
 	// each link face so multicast sync traffic can reach neighbors. All other
 	// routes (ADS data, PFS sync/data, user prefixes) are installed by the

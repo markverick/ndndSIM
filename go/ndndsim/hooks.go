@@ -64,6 +64,13 @@ type NodeHooks struct {
 	// EnableFaceEvents controls whether the face-event polling loop runs.
 	// Set to false in simulation; the sim layer manages faces directly.
 	EnableFaceEvents bool
+
+	// RouterName is the per-node router name (enc.Name, stored as interface{}
+	// to avoid an import cycle with the ndnd module). nil → no per-node router
+	// name; the global CfgRouterName() falls back to core.C.Fw.RouterName.
+	// When set, ReceivePacket strips self-addressed EgressRouter from incoming
+	// packets so the pipeline delivers them locally instead of transit-routing.
+	RouterName interface{}
 }
 
 // productionHooks is returned for goroutines that are not bound to a node.
