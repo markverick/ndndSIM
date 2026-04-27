@@ -357,14 +357,6 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 			n.Forwarder.AddRouteWithOrigin(prefix, faceID, 1, config.NlsrOrigin)
 		}
 	}
-	// Install /localhop on all link faces so that advertisement data fetches
-	// (which use /localhop/<router>/DV/ADV/...) can reach direct neighbors.
-	// This mirrors real NDN localhop-scope forwarding: interests scoped to
-	// /localhop are forwarded to all directly-connected faces.
-	for _, faceID := range n.ifaceFaces {
-		n.Forwarder.AddRouteWithOrigin(enc.Name{enc.LOCALHOP}, faceID, 1, config.NlsrOrigin)
-	}
-
 	n.dvRouter = sdv
 	return nil
 }
