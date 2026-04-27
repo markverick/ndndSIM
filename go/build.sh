@@ -52,16 +52,19 @@ OUT_LIB="${OUT_LIB:-${SCRIPT_DIR}/libndndsim-${NDND_PHASE}.a}"
 TRANSFORMED_DIR="${SCRIPT_DIR}/.transformed-ndnd-${NDND_PHASE}"
 
 # Locate Go binary: prefer explicit $GO, then a toolchain downloaded into
-# GOPATH, then a toolchain in /usr/local/go, then whatever is on PATH.
+# GOPATH (for local dev), then /usr/local/go, then whatever is on PATH
+# (covers CI environments such as actions/setup-go@v5 with any Go version).
+# The || true guards prevent set -euo pipefail from aborting when the
+# GOPATH toolchain glob matches nothing (e.g., CI has Go 1.25, not 1.24).
 if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
     _GOPATH="${GOPATH:-${HOME}/go}"
-    GO="$(ls "${_GOPATH}"/pkg/mod/golang.org/toolchain@v0.0.1-go1.24.*.linux-amd64/bin/go 2>/dev/null | sort -V | tail -1)"
+    GO="$(ls "${_GOPATH}"/pkg/mod/golang.org/toolchain@v0.0.1-go1.24.*.linux-amd64/bin/go 2>/dev/null | sort -V | tail -1 || true)"
 fi
 if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
     GO="/usr/local/go/bin/go"
 fi
 if [[ -z "${GO:-}" || ! -x "${GO:-}" ]]; then
-    GO="$(command -v go)"
+    GO="$(command -v go 2>/dev/null || true)"
 fi
 
 copy_overlay_additions() {
@@ -155,6 +158,10 @@ use ./.transformed-ndnd-${NDND_PHASE}
 EOF
 
 cd "${SCRIPT_DIR}"
+
+# Point GOWORK explicitly at our workspace file so that any GOWORK=off
+# inherited from the caller's environment does not suppress the workspace.
+export GOWORK="${SCRIPT_DIR}/go.work"
 
 # Sync workspace checksums.
 ${GO} work sync 2>/dev/null || true
