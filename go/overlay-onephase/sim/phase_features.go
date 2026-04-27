@@ -37,15 +37,19 @@ func decodeEgressRouter(*SimForwarder, *defn.Pkt, *defn.FwLpPacket) {}
 // encodeEgressRouter is a no-op in the onephase build.
 func encodeEgressRouter(*defn.FwLpPacket, *defn.Pkt) {}
 
-// registerSimRoute installs a direct FIB entry from prefix to appFaceID.
-// onephase has no PET; the FIB is the only forwarding table for local delivery.
+// registerSimRoute registers a producer prefix via the RIB with RouteOriginApp,
+// exactly matching what ndnd@main Engine.RegisterRoute does:
+//   RegisterRoute → ExecMgmtCmd("rib","register") → Rib.AddEncRoute(Origin:RouteOriginApp=0, Flags:ChildInherit)
+//   → updateNexthopsEnc → FibStrategyTable.InsertNextHopEnc
 func registerSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
-	fwd.AddDirectRoute(prefix, appFaceID, 0)
+	fwd.AddRouteWithFlags(prefix, appFaceID, 0,
+		uint64(mgmt.RouteOriginApp),
+		uint64(mgmt.RouteFlagChildInherit))
 	return nil
 }
 
-// unregisterSimRoute removes the direct FIB entry installed by registerSimRoute.
+// unregisterSimRoute removes the RIB entry installed by registerSimRoute.
 func unregisterSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
-	fwd.RemoveDirectRoute(prefix, appFaceID)
+	fwd.RemoveRouteWithOrigin(prefix, appFaceID, uint64(mgmt.RouteOriginApp))
 	return nil
 }

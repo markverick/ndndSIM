@@ -88,9 +88,7 @@ func NewSimForwarder(clock Clock, hooks *_ndndsim.NodeHooks) *SimForwarder {
 	// Create a real forwarding thread (ID 0 -- single-threaded in sim).
 	fwd.thread = fw.NewThread(0)
 	fwd.thread.SetFib(fib)
-	if pet != nil {
-		attachSimPetThread(fwd.thread, pet)
-	}
+	attachSimPetThread(fwd.thread, pet) // onephase: no-op; twophase: wires PET into thread
 
 	return fwd
 }
@@ -152,9 +150,7 @@ func (fwd *SimForwarder) RemoveFace(id uint64) {
 	fwd.withNodeFib(func() {
 		fwd.rib.CleanUpFace(id)
 	})
-	if fwd.pet != nil {
-		cleanUpSimPetFace(fwd.pet, id)
-	}
+	cleanUpSimPetFace(fwd.pet, id) // onephase: no-op; twophase: removes PET nexthops for face
 	// Remove nexthops for this face from the per-node FIB.
 	if fc, ok := fwd.fib.(faceCleanable); ok {
 		fc.CleanUpFace(id)
@@ -236,13 +232,12 @@ func (fwd *SimForwarder) AddRoute(name enc.Name, faceID uint64, cost uint64) {
 	fwd.AddDirectRoute(name, faceID, cost)
 }
 
-// AddDirectRoute installs a direct prefix route for simulation users.
-// twophase mirrors the route into PET so hand-wired simulation routes keep
-// working; producer registration should use Engine.RegisterRoute instead.
+// AddDirectRoute installs a direct prefix route for hand-wired simulation topology
+// (e.g. DV routing setup, C++ scenario helpers). In twophase the route is also
+// mirrored into PET; in onephase addSimPetNextHop is a no-op.
+// App producers should call Engine.RegisterRoute, not this.
 func (fwd *SimForwarder) AddDirectRoute(name enc.Name, faceID uint64, cost uint64) {
-	if fwd.pet != nil {
-		addSimPetNextHop(fwd.pet, name, faceID, cost)
-	}
+	addSimPetNextHop(fwd.pet, name, faceID, cost) // onephase: no-op; twophase: PET mirror
 	fwd.fib.InsertNextHopEnc(name, faceID, cost)
 	fwd.AddRouteWithOrigin(name, faceID, cost, 0)
 }
@@ -277,9 +272,7 @@ func (fwd *SimForwarder) RemoveRoute(name enc.Name, faceID uint64) {
 
 // RemoveDirectRoute removes a direct prefix route installed for simulation.
 func (fwd *SimForwarder) RemoveDirectRoute(name enc.Name, faceID uint64) {
-	if fwd.pet != nil {
-		removeSimPetNextHop(fwd.pet, name, faceID)
-	}
+	removeSimPetNextHop(fwd.pet, name, faceID) // onephase: no-op; twophase: PET mirror
 	fwd.fib.RemoveNextHopEnc(name, faceID)
 	fwd.RemoveRouteWithOrigin(name, faceID, 0)
 }
