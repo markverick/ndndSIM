@@ -58,9 +58,8 @@ class NdndStack : public Object
     void RemoveRoute(const std::string& prefix, uint64_t faceId);
 
     /**
-     * Register a producer prefix: installs a local FIB entry (app face) and
-     * announces the prefix to DV for propagation to remote nodes.
-     * Matches the one-phase emulation path: rib/register → FIB + DV readvertise.
+     * Register a producer prefix using the phase-appropriate local forwarding
+     * table, then announce the prefix to DV for propagation to remote nodes.
      */
     void RegisterProducer(const std::string& prefix);
 

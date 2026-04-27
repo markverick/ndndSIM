@@ -234,10 +234,11 @@ func attachProducer(t *testing.T, node *Node, prefix enc.Name) *int64 {
 		t.Fatalf("AttachHandler: %v", err)
 	}
 
-	// Producer application route: deliver matching Interests to the app face.
-	// DV announcement propagates this prefix to other nodes, but the local node
-	// still needs a route from the forwarder to its own producer handler.
-	node.AddRoute(prefix, node.AppFaceID(), 0)
+	// Producer registration installs the phase-appropriate local forwarding
+	// entry so matching Interests reach the app face.
+	if err := node.Engine().RegisterRoute(prefix); err != nil {
+		t.Fatalf("RegisterRoute: %v", err)
+	}
 
 	return &served
 }
@@ -694,7 +695,9 @@ func TestDvProducerMobilityFastRecoveryStrict(t *testing.T) {
 	// Producer mobility: old producer leaves, new producer appears.
 	nodes[3].WithdrawPrefixFromDv(prefix)
 	nodes[3].Engine().DetachHandler(prefix)
-	nodes[3].RemoveRoute(prefix, nodes[3].AppFaceID())
+	if err := nodes[3].Engine().UnregisterRoute(prefix); err != nil {
+		t.Fatalf("UnregisterRoute old producer: %v", err)
+	}
 
 	servedB := attachProducer(t, nodes[1], prefix)
 	nodes[1].AnnouncePrefixToDv(prefix, 0)
@@ -763,7 +766,9 @@ func TestDvBranchSwitchMobilityStrict(t *testing.T) {
 	// Move producer from branch A to branch B.
 	nodes[3].WithdrawPrefixFromDv(prefix)
 	nodes[3].Engine().DetachHandler(prefix)
-	nodes[3].RemoveRoute(prefix, nodes[3].AppFaceID())
+	if err := nodes[3].Engine().UnregisterRoute(prefix); err != nil {
+		t.Fatalf("UnregisterRoute old producer: %v", err)
+	}
 
 	servedB := attachProducer(t, nodes[4], prefix)
 	nodes[4].AnnouncePrefixToDv(prefix, 0)

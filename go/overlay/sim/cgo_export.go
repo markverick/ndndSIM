@@ -624,10 +624,8 @@ func NdndSimRegisterProducer(nodeId C.uint32_t, prefixStr *C.char, prefixLen C.i
 		return -1
 	}
 
-	// Install a local forwarder route so fw.Thread delivers incoming Interests
-	// to the app face where the handler can receive them. Without this, the
-	// forwarder drops all Interests for this prefix — they never reach the
-	// handler registered above.
+	// Register the producer prefix with the local forwarder using the
+	// phase-appropriate mechanism so incoming Interests can reach the app face.
 	engine.RegisterRoute(name)
 
 	// If DV is running, announce this prefix so it propagates to neighbors

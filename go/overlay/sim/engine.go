@@ -416,16 +416,26 @@ func (e *SimEngine) ExecMgmtCmd(module string, cmd string, args any) (any, error
 func (e *SimEngine) SetCmdSec(signer ndn.Signer, validator func(enc.Name, enc.Wire, ndn.Signature) bool) {
 }
 
-// RegisterRoute exposes a local application prefix through the phase-appropriate
-// forwarding tables.
+// RegisterRoute exposes a local application prefix through the same
+// phase-appropriate table used by the production engine.
+// twophase registers a PET nexthop; onephase falls back to a direct FIB route
+// because the onephase simulation build does not provide PET management.
 func (e *SimEngine) RegisterRoute(prefix enc.Name) error {
+	if e.forwarder != nil && e.forwarder.pet != nil {
+		_, err := e.ExecMgmtCmd("pet", "add-nexthop", &mgmt.ControlArgs{Name: prefix})
+		return err
+	}
 	e.forwarder.AddDirectRoute(prefix, e.appFaceID, 0)
 	return nil
 }
 
-// UnregisterRoute removes a local application prefix from the phase-appropriate
-// forwarding tables.
+// UnregisterRoute removes a local application prefix from the same
+// phase-appropriate table used by RegisterRoute.
 func (e *SimEngine) UnregisterRoute(prefix enc.Name) error {
+	if e.forwarder != nil && e.forwarder.pet != nil {
+		_, err := e.ExecMgmtCmd("pet", "remove-nexthop", &mgmt.ControlArgs{Name: prefix})
+		return err
+	}
 	e.forwarder.RemoveDirectRoute(prefix, e.appFaceID)
 	return nil
 }

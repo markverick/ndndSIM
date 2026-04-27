@@ -118,9 +118,10 @@ func TestConsumerLoopCountsInterests(t *testing.T) {
 		t.Fatalf("AttachHandler: %v", err)
 	}
 
-	// n1 needs a FIB route /ndn/test -> appFaceID so the forwarder delivers
-	// incoming Interests to the producer app.
-	n1.AddRoute(prefix, n1.AppFaceID(), 0)
+	// The producer node needs a phase-appropriate local route to its app face.
+	if err := n1.Engine().RegisterRoute(prefix); err != nil {
+		t.Fatalf("RegisterRoute: %v", err)
+	}
 
 	// n0 needs a FIB route /ndn/test -> face0to1 so interests leave node 0.
 	n0.AddRoute(prefix, face0to1, 0)
@@ -165,7 +166,9 @@ func TestConsumerLoopStops(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AttachHandler: %v", err)
 	}
-	n1.AddRoute(prefix, n1.AppFaceID(), 0)
+	if err := n1.Engine().RegisterRoute(prefix); err != nil {
+		t.Fatalf("RegisterRoute: %v", err)
+	}
 	n0.AddRoute(prefix, face0to1, 0)
 
 	stopped := startConsumerLoop(n0.Engine(), clock, 0, prefix, 200.0, 4*time.Second)

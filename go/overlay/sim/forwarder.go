@@ -231,12 +231,14 @@ func (fwd *SimForwarder) SetMulticastStrategy(prefix enc.Name, strategy enc.Name
 }
 
 // AddRoute adds a route through this node's RIB so that readvertise fires.
+// This is a manual forwarding shortcut for simulation helpers and examples.
 func (fwd *SimForwarder) AddRoute(name enc.Name, faceID uint64, cost uint64) {
 	fwd.AddDirectRoute(name, faceID, cost)
 }
 
 // AddDirectRoute installs a direct prefix route for simulation users.
-// twophase mirrors the route into PET; onephase updates only the FIB.
+// twophase mirrors the route into PET so hand-wired simulation routes keep
+// working; producer registration should use Engine.RegisterRoute instead.
 func (fwd *SimForwarder) AddDirectRoute(name enc.Name, faceID uint64, cost uint64) {
 	if fwd.pet != nil {
 		addSimPetNextHop(fwd.pet, name, faceID, cost)
