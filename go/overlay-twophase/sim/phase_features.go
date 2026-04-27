@@ -152,4 +152,3 @@ func unregisterSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) er
 	fwd.pet.(*table.PrefixEgressTable).RemoveNextHopEnc(prefix, appFaceID)
 	return nil
 }
-}
