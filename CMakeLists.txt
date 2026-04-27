@@ -113,7 +113,7 @@ set(NDND_GO_HEADER  ${NDNDSIM_GO_DIR}/libndndsim-${NDNDSIM_PHASE}.h)
 file(GLOB_RECURSE NDND_GO_SOURCES
     "${NDNDSIM_GO_DIR}/transform/*.go"
     "${NDNDSIM_GO_DIR}/overlay/*.go"
-    "${NDNDSIM_GO_DIR}/overlay-op/*.go"
+    "${NDNDSIM_GO_DIR}/overlay-onephase/*.go"
     "${NDNDSIM_GO_DIR}/ndndsim/*.go"
 )
 

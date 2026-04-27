@@ -63,7 +63,7 @@ type SimForwarder struct {
 
 // NewSimForwarder creates a new simulation forwarder backed by a real fw.Thread.
 // Each simulated node should have its own SimForwarder. Phase-specific PET and
-// multicast tables are attached by helper constructors from overlay-op/tw.
+// multicast tables are attached by helper constructors from overlay-onephase/twophase.
 func NewSimForwarder(clock Clock, hooks *_ndndsim.NodeHooks) *SimForwarder {
 	rib := &table.RibTable{}
 	rib.InitRoot()

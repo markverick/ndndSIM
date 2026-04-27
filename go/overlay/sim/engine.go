@@ -420,28 +420,14 @@ func (e *SimEngine) SetCmdSec(signer ndn.Signer, validator func(enc.Name, enc.Wi
 // twophase: registers via the PET (prefix egress table).
 // onephase: registers via a direct FIB entry to the app face.
 func (e *SimEngine) RegisterRoute(prefix enc.Name) error {
-	if e.forwarder.pet != nil {
-		// twophase: deliver matching Interests through the PET.
-		_, err := e.ExecMgmtCmd("pet", "add-nexthop", &mgmt.ControlArgs{Name: prefix})
-		return err
-	}
-	// onephase: deliver matching Interests via a direct FIB entry.
-	e.forwarder.AddDirectRoute(prefix, e.appFaceID, 0)
-	return nil
+	return registerSimRoute(e.forwarder, prefix, e.appFaceID)
 }
 
 // UnregisterRoute removes the producer app-face entry installed by RegisterRoute.
 // twophase: removes the PET nexthop.
 // onephase: removes the direct FIB entry.
 func (e *SimEngine) UnregisterRoute(prefix enc.Name) error {
-	if e.forwarder.pet != nil {
-		// twophase.
-		_, err := e.ExecMgmtCmd("pet", "remove-nexthop", &mgmt.ControlArgs{Name: prefix})
-		return err
-	}
-	// onephase.
-	e.forwarder.RemoveDirectRoute(prefix, e.appFaceID)
-	return nil
+	return unregisterSimRoute(e.forwarder, prefix, e.appFaceID)
 }
 
 // Post executes the task synchronously.

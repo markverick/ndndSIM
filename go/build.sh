@@ -10,7 +10,7 @@
 #   2. Runs the AST transformer to patch the copy and apply overlay files.
 #      The overlay/ directory contains sim/ and all sim-specific additions
 #      to ndnd core packages.
-#      For onephase and twophase builds, overlay-op/ and overlay-tw/ provide
+#      For onephase and twophase builds, overlay-onephase/ and overlay-twophase/ provide
 #      phase-specific net-new files only.
 #   3. Generates a go.work that ties together ndndsim, the transformer, and
 #      the transformed ndnd (which now includes sim/).
@@ -125,18 +125,18 @@ GOWORK=off ${GO} run . \
     --sim-module-dir "${SCRIPT_DIR}/ndndsim"
 
 # Apply phase-specific net-new overlay additions on top (if the directory exists).
-if [[ -d "${SCRIPT_DIR}/overlay-op" ]]; then
-    echo "==> Applying overlay-op patches for phase: ${NDND_PHASE}"
+if [[ -d "${SCRIPT_DIR}/overlay-onephase" ]]; then
+    echo "==> Applying overlay-onephase patches for phase: ${NDND_PHASE}"
     if [[ "$NDND_PHASE" == "onephase" ]]; then
-        copy_overlay_additions "${SCRIPT_DIR}/overlay-op" "$TRANSFORMED_DIR" "overlay-op"
+        copy_overlay_additions "${SCRIPT_DIR}/overlay-onephase" "$TRANSFORMED_DIR" "overlay-onephase"
     fi
 fi
 
 # Apply twophase-only net-new overlay additions (if the directory exists).
-if [[ -d "${SCRIPT_DIR}/overlay-tw" ]]; then
-    echo "==> Applying overlay-tw patches for phase: ${NDND_PHASE}"
+if [[ -d "${SCRIPT_DIR}/overlay-twophase" ]]; then
+    echo "==> Applying overlay-twophase patches for phase: ${NDND_PHASE}"
     if [[ "$NDND_PHASE" == "twophase" ]]; then
-        copy_overlay_additions "${SCRIPT_DIR}/overlay-tw" "$TRANSFORMED_DIR" "overlay-tw"
+        copy_overlay_additions "${SCRIPT_DIR}/overlay-twophase" "$TRANSFORMED_DIR" "overlay-twophase"
     fi
 fi
 

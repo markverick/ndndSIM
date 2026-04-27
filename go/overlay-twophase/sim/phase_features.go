@@ -60,10 +60,7 @@ func encodeEgressRouter(lpFrag *defn.FwLpPacket, pkt *defn.Pkt) {
 }
 
 func execSimPetMgmtCmd(fwd *SimForwarder, cmd string, ca *mgmt.ControlArgs, appFaceID uint64) (any, error) {
-	pet, ok := fwd.pet.(*table.PrefixEgressTable)
-	if !ok || pet == nil {
-		return nil, fmt.Errorf("SimEngine: unsupported mgmt cmd pet")
-	}
+	pet := fwd.pet.(*table.PrefixEgressTable)
 
 	switch cmd {
 	case "add-egress":
@@ -141,4 +138,18 @@ func execSimPetMgmtCmd(fwd *SimForwarder, cmd string, ca *mgmt.ControlArgs, appF
 	default:
 		return nil, fmt.Errorf("SimEngine: unsupported mgmt cmd pet/%s", cmd)
 	}
+}
+
+// registerSimRoute adds a PET nexthop for prefix on the app face.
+// twophase delivers Interests to producers via the PET, not the FIB.
+func registerSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
+	fwd.pet.(*table.PrefixEgressTable).AddNextHopEnc(prefix, appFaceID, 0)
+	return nil
+}
+
+// unregisterSimRoute removes the PET nexthop installed by registerSimRoute.
+func unregisterSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
+	fwd.pet.(*table.PrefixEgressTable).RemoveNextHopEnc(prefix, appFaceID)
+	return nil
+}
 }

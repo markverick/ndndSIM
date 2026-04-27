@@ -6,47 +6,18 @@ package sim
 //   1. AttachHandler returns ErrMultipleHandlers on duplicate prefix.
 //   2. DetachHandler prunes the nameTrie so re-attachment works.
 //   3. Express fires the timeout callback exactly once (not twice).
-//   4. onData CanBePrefix: Interest name is a prefix of Data name (not the
-//      reverse). This is the regression test for the dataName.IsPrefix bug.
-//   5. RegisterRoute follows phase semantics: PET nexthop in twophase,
-//      direct FIB route in onephase.
-
-func petHasFaceForPrefix(resp any, prefix string, faceID uint64) bool {
-	dataset := reflect.ValueOf(resp)
-	if !dataset.IsValid() || dataset.Kind() != reflect.Ptr || dataset.IsNil() {
-		return false
-	}
-	entries := dataset.Elem().FieldByName("Entries")
-	if !entries.IsValid() || entries.Kind() != reflect.Slice {
-		return false
-	}
-	for i := 0; i < entries.Len(); i++ {
-		entry := entries.Index(i)
-		nameField := entry.Elem().FieldByName("Name")
-		entryName, ok := nameField.Interface().(interface{ String() string })
-		if !ok || entryName.String() != prefix {
-			continue
-		}
-		nextHopRecords := entry.Elem().FieldByName("NextHopRecords")
-		for j := 0; j < nextHopRecords.Len(); j++ {
-			nh := nextHopRecords.Index(j).Elem().FieldByName("FaceId")
-			if nh.Uint() == faceID {
-				return true
-			}
-		}
-	}
-	return false
-}
+//   4. onData CanBePrefix: Interest name is a prefix of Data name.
+//
+// Phase-specific RegisterRoute/UnregisterRoute tests live in
+// overlay-onephase/sim/ and overlay-twophase/sim/ respectively.
 
 import (
 	"errors"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/named-data/ndnd/std/ndn"
-	mgmt "github.com/named-data/ndnd/std/ndn/mgmt_2022"
 	sig "github.com/named-data/ndnd/std/security/signer"
 	"github.com/named-data/ndnd/std/types/optional"
 	"github.com/named-data/ndnd/std/utils"
@@ -204,51 +175,5 @@ func TestEngineOnDataCanBePrefix(t *testing.T) {
 	}
 }
 
-// TestEngineRegisterRouteMatchesPhaseBehavior verifies that RegisterRoute
-// follows the correct per-phase semantics:
-// twophase registers a PET nexthop (no direct FIB entry);
-// onephase registers a direct FIB entry to the app face (no PET).
-func TestEngineRegisterRouteMatchesPhaseBehavior(t *testing.T) {
-	clock := NewDeterministicClock(time.Unix(0, 0))
-	node := NewNode(0, clock)
-	if err := node.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer node.Stop()
-
-	prefix := mustName(t, "/test/register-route")
-	eng := node.Engine()
-
-	if err := eng.RegisterRoute(prefix); err != nil {
-		t.Fatalf("RegisterRoute: %v", err)
-	}
-
-	fibHops := node.Forwarder.Thread().Fib().FindNextHopsEnc(prefix)
-	if node.Forwarder.pet != nil {
-		// twophase build: must install a PET nexthop, must not touch the FIB.
-		if len(fibHops) != 0 {
-			t.Fatalf("twophase: RegisterRoute must not install a direct FIB entry, got %d nexthops", len(fibHops))
-		}
-		resp, err := eng.ExecMgmtCmd("pet", "list", &mgmt.ControlArgs{})
-		if err != nil {
-			t.Fatalf("pet/list: %v", err)
-		}
-		if !petHasFaceForPrefix(resp, prefix.String(), node.AppFaceID()) {
-			t.Fatalf("twophase RegisterRoute did not install PET nexthop for %s on app face %d", prefix, node.AppFaceID())
-		}
-	} else {
-		// onephase build: must install a direct FIB entry to the app face, no PET.
-		if len(fibHops) != 1 || fibHops[0].Nexthop != node.AppFaceID() {
-			t.Fatalf("onephase: RegisterRoute must install one direct FIB entry to app face %d, got %#v", node.AppFaceID(), fibHops)
-		}
-	}
-
-	if err := eng.UnregisterRoute(prefix); err != nil {
-		t.Fatalf("UnregisterRoute: %v", err)
-	}
-
-	fibHops = node.Forwarder.Thread().Fib().FindNextHopsEnc(prefix)
-	if len(fibHops) != 0 {
-		t.Fatalf("route still present in FIB after UnregisterRoute: %#v", fibHops)
-	}
-}
+// TestEngineRegisterRouteMatchesPhaseBehavior is intentionally absent from
+// this shared file. Each overlay provides its own test in phase_features_test.go.

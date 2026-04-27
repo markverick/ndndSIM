@@ -36,3 +36,16 @@ func decodeEgressRouter(*SimForwarder, *defn.Pkt, *defn.FwLpPacket) {}
 
 // encodeEgressRouter is a no-op in the onephase build.
 func encodeEgressRouter(*defn.FwLpPacket, *defn.Pkt) {}
+
+// registerSimRoute installs a direct FIB entry from prefix to appFaceID.
+// onephase has no PET; the FIB is the only forwarding table for local delivery.
+func registerSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
+	fwd.AddDirectRoute(prefix, appFaceID, 0)
+	return nil
+}
+
+// unregisterSimRoute removes the direct FIB entry installed by registerSimRoute.
+func unregisterSimRoute(fwd *SimForwarder, prefix enc.Name, appFaceID uint64) error {
+	fwd.RemoveDirectRoute(prefix, appFaceID)
+	return nil
+}
