@@ -22,9 +22,12 @@
 #   NDND_HASH     – git ref to check out from NDND_SRC
 #   NDND_GIT_URL  – if set, clone from this URL instead of using NDND_SRC
 #   NDND_GIT_BRANCH – branch to clone when NDND_GIT_URL is set
-#   OUT_LIB       – output path for the compiled .a archive
-#   GO            – Go binary to use
+#   OUT_LIB         – output path for the compiled .a archive
+#   GO              – Go binary to use
+#   NDND_TEST_ONLY  – if 1, skip the CGo archive build (transformer + go test only)
 set -euo pipefail
+
+NDND_TEST_ONLY="${NDND_TEST_ONLY:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -157,12 +160,14 @@ cd "${SCRIPT_DIR}"
 ${GO} work sync 2>/dev/null || true
 
 # ---------- step 4: build ----------
-echo "==> Building simulation library"
-${GO} build -buildmode=c-archive \
-    -o "$OUT_LIB" \
-    github.com/named-data/ndnd/sim/cmd
+if [[ "$NDND_TEST_ONLY" != "1" ]]; then
+    echo "==> Building simulation library"
+    ${GO} build -buildmode=c-archive \
+        -o "$OUT_LIB" \
+        github.com/named-data/ndnd/sim/cmd
+fi
 
 echo "==> Running sim tests"
 ${GO} test -count=1 -timeout 300s github.com/named-data/ndnd/sim
 
-echo "==> Done: ${OUT_LIB}"
+[[ "$NDND_TEST_ONLY" == "1" ]] && echo "==> Done (test-only)" || echo "==> Done: ${OUT_LIB}"

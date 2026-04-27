@@ -8,32 +8,29 @@ on:
 
 jobs:
   go-test:
-    name: Go Tests
+    name: Go Tests (${{ matrix.phase }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: twophase
+            ndnd_branch: dv2
+          - phase: onephase
+            ndnd_branch: main
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-          cache-dependency-path: ndnd/go.sum
 
-      - name: Vet
-        working-directory: ndnd
+      - name: Transform and test (${{ matrix.phase }})
+        working-directory: go
         env:
+          NDND_PHASE: ${{ matrix.phase }}
+          NDND_GIT_URL: https://github.com/named-data/ndnd.git
+          NDND_GIT_BRANCH: ${{ matrix.ndnd_branch }}
+          NDND_TEST_ONLY: '1'
           CGO_ENABLED: '0'
-        run: go vet ./sim/
-
-      - name: Test (sim)
-        working-directory: ndnd
-        env:
-          CGO_ENABLED: '0'
-        run: go test ./sim/ -v -count=1
-
-      - name: Test (fw, std)
-        working-directory: ndnd
-        env:
-          CGO_ENABLED: '0'
-        run: go test ./fw/... ./std/... -count=1
+        run: bash build.sh
