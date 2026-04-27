@@ -58,8 +58,9 @@ class NdndStack : public Object
     void RemoveRoute(const std::string& prefix, uint64_t faceId);
 
     /**
-     * Register a producer prefix using the phase-appropriate local forwarding
-     * table, then announce the prefix to DV for propagation to remote nodes.
+     * Register a producer prefix so incoming Interests reach the app face
+     * (twophase: via PET; onephase: via direct FIB entry), then announce
+     * the prefix to DV for propagation to remote nodes.
      */
     void RegisterProducer(const std::string& prefix);
 

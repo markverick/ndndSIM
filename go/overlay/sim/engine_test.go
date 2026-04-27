@@ -205,9 +205,9 @@ func TestEngineOnDataCanBePrefix(t *testing.T) {
 }
 
 // TestEngineRegisterRouteMatchesPhaseBehavior verifies that RegisterRoute
-// follows the production engine semantics for the active phase:
-// twophase registers only a PET nexthop, while onephase falls back to a
-// direct FIB route because PET management is unavailable there.
+// follows the correct per-phase semantics:
+// twophase registers a PET nexthop (no direct FIB entry);
+// onephase registers a direct FIB entry to the app face (no PET).
 func TestEngineRegisterRouteMatchesPhaseBehavior(t *testing.T) {
 	clock := NewDeterministicClock(time.Unix(0, 0))
 	node := NewNode(0, clock)
@@ -225,8 +225,9 @@ func TestEngineRegisterRouteMatchesPhaseBehavior(t *testing.T) {
 
 	fibHops := node.Forwarder.Thread().Fib().FindNextHopsEnc(prefix)
 	if node.Forwarder.pet != nil {
+		// twophase build: must install a PET nexthop, must not touch the FIB.
 		if len(fibHops) != 0 {
-			t.Fatalf("twophase RegisterRoute should not install a direct FIB route, got %d nexthops", len(fibHops))
+			t.Fatalf("twophase: RegisterRoute must not install a direct FIB entry, got %d nexthops", len(fibHops))
 		}
 		resp, err := eng.ExecMgmtCmd("pet", "list", &mgmt.ControlArgs{})
 		if err != nil {
@@ -236,8 +237,9 @@ func TestEngineRegisterRouteMatchesPhaseBehavior(t *testing.T) {
 			t.Fatalf("twophase RegisterRoute did not install PET nexthop for %s on app face %d", prefix, node.AppFaceID())
 		}
 	} else {
+		// onephase build: must install a direct FIB entry to the app face, no PET.
 		if len(fibHops) != 1 || fibHops[0].Nexthop != node.AppFaceID() {
-			t.Fatalf("onephase RegisterRoute should install one direct FIB route to app face %d, got %#v", node.AppFaceID(), fibHops)
+			t.Fatalf("onephase: RegisterRoute must install one direct FIB entry to app face %d, got %#v", node.AppFaceID(), fibHops)
 		}
 	}
 

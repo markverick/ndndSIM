@@ -624,8 +624,9 @@ func NdndSimRegisterProducer(nodeId C.uint32_t, prefixStr *C.char, prefixLen C.i
 		return -1
 	}
 
-	// Register the producer prefix with the local forwarder using the
-	// phase-appropriate mechanism so incoming Interests can reach the app face.
+	// Register the producer prefix with the local forwarder so incoming
+	// Interests can reach the app face. twophase uses the PET; onephase uses
+	// a direct FIB entry.
 	engine.RegisterRoute(name)
 
 	// If DV is running, announce this prefix so it propagates to neighbors
