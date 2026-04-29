@@ -381,6 +381,41 @@ func (pfx *PrefixModule) SuppressionStats() ndn_sync.SuppressStats {
 	}
 	return svs.SuppressionStats()
 }
+
+// ExportPfxSvsState exports the pfxSvs instance state as a TLV wire.
+// Returns nil if pfxSvs has not been started yet (no state to export).
+func (pfx *PrefixModule) ExportPfxSvsState() enc.Wire {
+	if pfx.pfxSvs == nil {
+		return nil
+	}
+	return pfx.pfxSvs.ExportInstanceState()
+}
+
+// ImportPfxSvsState restores the pfxSvs instance state from a previously
+// exported wire. Must be called before pfxSvs.Start().
+func (pfx *PrefixModule) ImportPfxSvsState(wire enc.Wire) error {
+	if pfx.pfxSvs == nil {
+		return nil
+	}
+	return pfx.pfxSvs.ImportInstanceState(wire)
+}
+
+// RestorePfxEntries populates the local PrefixEgreState with a previously
+// exported set of prefix snapshot entries. Should be called after Init() and
+// before pfxSvs.Start() so the prefix state is consistent from the start.
+func (pfx *PrefixModule) RestorePfxEntries(entries []table.PrefixSnapshotEntry) {
+	pfx.mu.Lock()
+	defer pfx.mu.Unlock()
+	for _, e := range entries {
+		router := pfx.pfx.GetRouter(e.Router)
+		router.Prefixes[e.Name.TlvStr()] = &table.PrefixEntry{
+			Name:           e.Name.Clone(),
+			Multicast:      e.Multicast,
+			ValidityPeriod: e.ValidityPeriod,
+			NextHops:       append([]table.PrefixNextHop(nil), e.NextHops...),
+		}
+	}
+}
 `
 
 // routerSimSnippet is injected into dv/dv/router.go.
@@ -422,14 +457,11 @@ func (dv *Router) Init() error {
 		return err
 	}
 
-	// Start prefix daemon.
-	dv.pfx.Start()
-
 	// Add self to the RIB and generate the initial advertisement.
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Initialise prefix egress state.
+	// Initialise prefix egress state (table only; SVS not yet started).
 	dv.pfx.Reset()
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
@@ -459,6 +491,60 @@ func (dv *Router) Cleanup() {
 	// sim mode, so there is no goroutine to signal (and sending to the stop
 	// channel would deadlock).
 	log.Info(dv, "Cleaned up DV router (sim)")
+}
+
+// _pfxStarted tracks which Router instances have had pfxSvs.Start() called.
+var _pfxStarted sync.Map // *Router → struct{}
+
+// _pfxCancel stores the cancel function for the pending pfxSvs startup timer.
+var _pfxCancel sync.Map // *Router → func()
+
+// _pfxReachable tracks the last-known reachable-router count per Router.
+var _pfxReachable sync.Map // *Router → int
+
+// startPfxOnce implements a debounced startup of the prefix SVS daemon.
+// It is called from runConvergenceHook() in notify.go on every RIB update,
+// with the current number of reachable routers passed as reachableCount.
+//
+// The debounce timer is reset ONLY when reachableCount grows (a new router
+// became reachable).  Periodic re-advertisements that do not change the RIB
+// do not grow the count and therefore do not reset the timer.  Once DV has
+// fully converged the count stabilises and the timer fires after exactly
+// 1×AdvertisementSyncInterval, starting pfxSvs with a complete routing table.
+//
+// This prevents the O(N²) fetch storm that occurs when pfxSvs starts before
+// DV routing is complete: on a 960-node, 10-hop topology with 1s adv-interval
+// DV takes ~10s to converge; on a 2-node test topology with 5s adv-interval
+// it converges in ~5s.  In both cases pfxSvs starts ~1 adv-interval after the
+// last new route, well within the available sim budget.
+//
+// We call the three sub-components of PrefixModule.Start() directly instead of
+// Start() itself because Start() calls pfx.pfx.Reset() which wipes announcements
+// queued before convergence.
+func (dv *Router) startPfxOnce(reachableCount int) {
+	// Fast path: pfxSvs already started.
+	if _, ok := _pfxStarted.Load(dv); ok {
+		return
+	}
+	// Only reset the debounce timer when a new router became reachable.
+	// Periodic re-advertisements keep reachableCount constant and are ignored.
+	old, _ := _pfxReachable.Swap(dv, reachableCount)
+	if old != nil && reachableCount <= old.(int) {
+		return
+	}
+	// Reachable count grew: cancel any pending timer and reschedule.
+	if prev, ok := _pfxCancel.Load(dv); ok {
+		prev.(func())()
+	}
+	cancel := _ndndsim.AfterFunc(dv.config.AdvertisementSyncInterval(), func() {
+		if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
+			dv.pfx.pfxSvs.Start()
+			dv.pfx.startFaceEvents()
+			dv.pfx.startPrefixPrune()
+		}
+		_pfxCancel.Delete(dv)
+	})
+	_pfxCancel.Store(dv, func() { cancel.Stop() })
 }
 
 // Nfdc returns the NFD management thread.
@@ -507,6 +593,154 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 		enc.NewGenericComponent("prefix"),
 		enc.NewGenericComponent("withdraw"),
 	}
+}
+
+// RouterSnapshotRow is a JSON-serialisable RIB row.
+type RouterSnapshotRibRow struct {
+	Dest    string ` + "`" + `json:"dest"` + "`" + `
+	NextHop string ` + "`" + `json:"next_hop"` + "`" + `
+	Cost    uint64 ` + "`" + `json:"cost"` + "`" + `
+}
+
+// RouterSnapshotFibRow is a JSON-serialisable FIB row.
+type RouterSnapshotFibRow struct {
+	Prefix string ` + "`" + `json:"prefix"` + "`" + `
+	FaceId uint64 ` + "`" + `json:"face_id"` + "`" + `
+	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
+}
+
+// RouterSnapshotPfxEntry is a JSON-serialisable prefix entry.
+type RouterSnapshotPfxEntry struct {
+	Router    string ` + "`" + `json:"router"` + "`" + `
+	Name      string ` + "`" + `json:"name"` + "`" + `
+	Multicast bool   ` + "`" + `json:"multicast"` + "`" + `
+	NextHops  []RouterSnapshotPfxNextHop ` + "`" + `json:"next_hops"` + "`" + `
+}
+
+// RouterSnapshotPfxNextHop is a JSON-serialisable prefix next-hop.
+type RouterSnapshotPfxNextHop struct {
+	Face uint64 ` + "`" + `json:"face"` + "`" + `
+	Cost uint64 ` + "`" + `json:"cost"` + "`" + `
+}
+
+// RouterSnapshot is the full serialisable state of a Router instance.
+type RouterSnapshot struct {
+	Rib       []RouterSnapshotRibRow   ` + "`" + `json:"rib"` + "`" + `
+	Fib       []RouterSnapshotFibRow   ` + "`" + `json:"fib"` + "`" + `
+	PfxSvs    []byte                   ` + "`" + `json:"pfx_svs_state"` + "`" + `
+	PfxEntries []RouterSnapshotPfxEntry ` + "`" + `json:"pfx_entries"` + "`" + `
+}
+
+// ExportSnapshot captures the current DV state into a RouterSnapshot.
+// Must be called after DV and prefix-SVS have converged.
+func (dv *Router) ExportSnapshot() RouterSnapshot {
+	dv.mutex.Lock()
+	ribRows := dv.rib.Snapshot()
+	fibRows := dv.fib.Snapshot()
+	pfxEntries := dv.pfx.SnapshotEntries()
+	dv.mutex.Unlock()
+
+	pfxSvsState := dv.pfx.ExportPfxSvsState()
+	var pfxSvsBytes []byte
+	for _, w := range pfxSvsState {
+		pfxSvsBytes = append(pfxSvsBytes, w...)
+	}
+
+	snap := RouterSnapshot{
+		PfxSvs: pfxSvsBytes,
+	}
+	for _, r := range ribRows {
+		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
+			Dest:    r.Dest.TlvStr(),
+			NextHop: r.NextHop.TlvStr(),
+			Cost:    r.Cost,
+		})
+	}
+	for _, f := range fibRows {
+		snap.Fib = append(snap.Fib, RouterSnapshotFibRow{
+			Prefix: f.Prefix.TlvStr(),
+			FaceId: f.FaceId,
+			Cost:   f.Cost,
+		})
+	}
+	for _, e := range pfxEntries {
+		entry := RouterSnapshotPfxEntry{
+			Router:    e.Router.TlvStr(),
+			Name:      e.Name.TlvStr(),
+			Multicast: e.Multicast,
+		}
+		for _, nh := range e.NextHops {
+			entry.NextHops = append(entry.NextHops, RouterSnapshotPfxNextHop{Face: nh.Face, Cost: nh.Cost})
+		}
+		snap.PfxEntries = append(snap.PfxEntries, entry)
+	}
+	return snap
+}
+
+// ImportSnapshot restores DV state from a RouterSnapshot.
+// Must be called after Init() and before the first heartbeat tick.
+func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
+	dv.mutex.Lock()
+	// Restore RIB.
+	for _, r := range snap.Rib {
+		dest, err := enc.NameFromTlvStr(r.Dest)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad dest name %q: %w", r.Dest, err)
+		}
+		nh, err := enc.NameFromTlvStr(r.NextHop)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad next-hop name %q: %w", r.NextHop, err)
+		}
+		dv.rib.Set(dest, nh, r.Cost)
+	}
+	// Restore FIB.
+	fibRowMap := make(map[string][]table.FibEntry)
+	for _, f := range snap.Fib {
+		fibRowMap[f.Prefix] = append(fibRowMap[f.Prefix], table.FibEntry{FaceId: f.FaceId, Cost: f.Cost})
+	}
+	for prefixStr, entries := range fibRowMap {
+		name, err := enc.NameFromTlvStr(prefixStr)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad fib prefix %q: %w", prefixStr, err)
+		}
+		dv.fib.Update(name, entries)
+	}
+	// Restore prefix egress state entries.
+	pfxEntries := make([]table.PrefixSnapshotEntry, 0, len(snap.PfxEntries))
+	for _, e := range snap.PfxEntries {
+		router, err := enc.NameFromTlvStr(e.Router)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad pfx router name %q: %w", e.Router, err)
+		}
+		name, err := enc.NameFromTlvStr(e.Name)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad pfx name %q: %w", e.Name, err)
+		}
+		entry := table.PrefixSnapshotEntry{
+			Router:    router,
+			Name:      name,
+			Multicast: e.Multicast,
+		}
+		for _, nh := range e.NextHops {
+			entry.NextHops = append(entry.NextHops, table.PrefixNextHop{Face: nh.Face, Cost: nh.Cost})
+		}
+		pfxEntries = append(pfxEntries, entry)
+	}
+	dv.mutex.Unlock()
+	dv.pfx.RestorePfxEntries(pfxEntries)
+	// Restore SVS state.
+	if len(snap.PfxSvs) > 0 {
+		wire := enc.Wire{snap.PfxSvs}
+		if err := dv.pfx.ImportPfxSvsState(wire); err != nil {
+			return fmt.Errorf("ImportSnapshot: SVS state restore failed: %w", err)
+		}
+	}
+	return nil
 }
 `
 
@@ -773,6 +1007,10 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippet)
 	// ndn_sync is not in the upstream router.go; needed for injected methods.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
+	// fmt, enc, and table are needed for ExportSnapshot/ImportSnapshot.
+	astutil.AddImport(fset, file, "fmt")
+	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
+	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
 	return true
 }
 
@@ -925,7 +1163,7 @@ func (dv *Router) Init() error {
 	}
 
 	// Start prefix table sync (SVS-based in main@51774b8).
-	dv.pfxSvs.Start()
+	dv.startPfxOnce(0)
 
 	// Add self to the RIB and generate the initial advertisement.
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
@@ -1009,7 +1247,117 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 		enc.NewGenericComponent("unregister"),
 	}
 }
-`
+
+// _pfxStarted tracks which Router instances have had pfx sync started.
+// Used by startPfxOnce to guarantee exactly-once startup of the prefix daemon
+// even though notify.go (shared between phases) calls startPfxOnce on every
+// convergence hook invocation.
+var _pfxStarted sync.Map
+
+// startPfxOnce starts the prefix SVS sync exactly once per Router instance.
+// In the onephase build Init() already calls pfxSvs.Start(); subsequent calls
+// from runConvergenceHook are deduplicated by _pfxStarted and are no-ops.
+// The reachableCount argument is accepted for signature compatibility with
+// notify.go but is unused in the onephase (immediate-start) path.
+func (dv *Router) startPfxOnce(_ int) {
+	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
+		dv.pfxSvs.Start()
+	}
+}
+
+// RouterSnapshotRibRow is a JSON-serialisable RIB row.
+type RouterSnapshotRibRow struct {
+	Dest    string ` + "`" + `json:"dest"` + "`" + `
+	NextHop string ` + "`" + `json:"next_hop"` + "`" + `
+	Cost    uint64 ` + "`" + `json:"cost"` + "`" + `
+}
+
+// RouterSnapshotFibRow is a JSON-serialisable FIB row.
+type RouterSnapshotFibRow struct {
+	Prefix string ` + "`" + `json:"prefix"` + "`" + `
+	FaceId uint64 ` + "`" + `json:"face_id"` + "`" + `
+	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
+}
+
+// RouterSnapshot is the full serialisable state of a Router instance.
+type RouterSnapshot struct {
+	Rib    []RouterSnapshotRibRow ` + "`" + `json:"rib"` + "`" + `
+	Fib    []RouterSnapshotFibRow ` + "`" + `json:"fib"` + "`" + `
+	PfxSvs []byte                ` + "`" + `json:"pfx_svs_state"` + "`" + `
+}
+
+// ExportSnapshot captures the current DV state into a RouterSnapshot.
+// Must be called after DV and prefix-SVS have converged.
+// Onephase: prefix table entries are not included (router names are not tracked);
+// the SVS state vector alone is sufficient for Stage N+1 to skip re-syncing.
+func (dv *Router) ExportSnapshot() RouterSnapshot {
+	dv.mutex.Lock()
+	ribRows := dv.rib.Snapshot()
+	fibRows := dv.fib.Snapshot()
+	dv.mutex.Unlock()
+
+	pfxSvsState := dv.pfxSvs.ExportInstanceState()
+	var pfxSvsBytes []byte
+	for _, w := range pfxSvsState {
+		pfxSvsBytes = append(pfxSvsBytes, w...)
+	}
+
+	snap := RouterSnapshot{PfxSvs: pfxSvsBytes}
+	for _, r := range ribRows {
+		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
+			Dest:    r.Dest.TlvStr(),
+			NextHop: r.NextHop.TlvStr(),
+			Cost:    r.Cost,
+		})
+	}
+	for _, f := range fibRows {
+		snap.Fib = append(snap.Fib, RouterSnapshotFibRow{
+			Prefix: f.Prefix.TlvStr(),
+			FaceId: f.FaceId,
+			Cost:   f.Cost,
+		})
+	}
+	return snap
+}
+
+// ImportSnapshot restores DV state from a RouterSnapshot.
+// Must be called after Init() and before the first heartbeat tick.
+func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
+	dv.mutex.Lock()
+	for _, r := range snap.Rib {
+		dest, err := enc.NameFromTlvStr(r.Dest)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad dest name %q: %w", r.Dest, err)
+		}
+		nh, err := enc.NameFromTlvStr(r.NextHop)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad next-hop name %q: %w", r.NextHop, err)
+		}
+		dv.rib.Set(dest, nh, r.Cost)
+	}
+	fibRowMap := make(map[string][]table.FibEntry)
+	for _, f := range snap.Fib {
+		fibRowMap[f.Prefix] = append(fibRowMap[f.Prefix], table.FibEntry{FaceId: f.FaceId, Cost: f.Cost})
+	}
+	for prefixStr, entries := range fibRowMap {
+		name, err := enc.NameFromTlvStr(prefixStr)
+		if err != nil {
+			dv.mutex.Unlock()
+			return fmt.Errorf("ImportSnapshot: bad fib prefix %q: %w", prefixStr, err)
+		}
+		dv.fib.Update(name, entries)
+	}
+	dv.mutex.Unlock()
+	if len(snap.PfxSvs) > 0 {
+		wire := enc.Wire{snap.PfxSvs}
+		if err := dv.pfxSvs.ImportInstanceState(wire); err != nil {
+			return fmt.Errorf("ImportSnapshot: SVS state restore failed: %w", err)
+		}
+	}
+	return nil
+}`
 
 // ---------------------------------------------------------------------------
 // Onephase injection functions
@@ -1035,5 +1383,9 @@ func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippetOp)
 	// ndn_sync already imported at 51774b8; addNamedImport is idempotent.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
+	// fmt, enc, and table needed for ExportSnapshot/ImportSnapshot.
+	astutil.AddImport(fset, file, "fmt")
+	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
+	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
 	return true
 }

@@ -59,6 +59,8 @@ main(int argc, char* argv[])
     std::string edgeDvConfig;
     std::string network = "/minindn";
     std::string edgeNodesCsv;
+    std::string exportSnap;
+    std::string importSnap;
     double simTime = 40.0;
     double traceInterval = 0.05;
     int numPrefixes = 0;
@@ -78,6 +80,10 @@ main(int argc, char* argv[])
                  edgeDvConfig);
     cmd.AddValue("network", "DV network prefix (default: /minindn)", network);
     cmd.AddValue("numPrefixes", "Total prefixes to announce across edge routers", numPrefixes);
+    cmd.AddValue("exportSnap", "Export DV snapshot to this JSON file after routing converges",
+                 exportSnap);
+    cmd.AddValue("importSnap", "Import DV snapshot from this JSON file before simulation starts",
+                 importSnap);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(topoFile.empty(), "--topo is required");
@@ -116,18 +122,59 @@ main(int argc, char* argv[])
     }
 
     NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
-    if (numPrefixes > 0)
+
+    if (!importSnap.empty())
     {
-        RegisterRoutingConvergedCallback([edgeNodes, numPrefixes]() {
-            for (int i = 0; i < numPrefixes; ++i)
-            {
-                Ptr<Node> node = edgeNodes.at(static_cast<size_t>(i) % edgeNodes.size());
-                std::string nodeName = Names::FindName(node);
-                auto stack = node->GetObject<NdndStack>();
-                std::string prefix = "/data/" + nodeName + "/pfx" + std::to_string(i);
-                stack->RegisterProducer(prefix);
-            }
-        });
+        // Routing state is pre-loaded from snapshot; convergence is instantaneous.
+        // Import the snapshot, then schedule prefix announcements at t=0 so they
+        // propagate during the simulation window.
+        int rc = NdndSimImportSnapshot(importSnap.c_str());
+        NS_ABORT_MSG_IF(rc != 0, "NdndSimImportSnapshot failed for: " << importSnap);
+
+        if (numPrefixes > 0)
+        {
+            Simulator::Schedule(Seconds(0.0), [edgeNodes, numPrefixes]() {
+                for (int i = 0; i < numPrefixes; ++i)
+                {
+                    Ptr<Node> node = edgeNodes.at(static_cast<size_t>(i) % edgeNodes.size());
+                    std::string nodeName = Names::FindName(node);
+                    auto stack = node->GetObject<NdndStack>();
+                    std::string prefix = "/data/" + nodeName + "/pfx" + std::to_string(i);
+                    stack->RegisterProducer(prefix);
+                }
+            });
+        }
+    }
+    else
+    {
+        // Normal path: wait for DV routing to converge, then announce prefixes
+        // and optionally export a snapshot.
+        if (numPrefixes > 0)
+        {
+            RegisterRoutingConvergedCallback([edgeNodes, numPrefixes, exportSnap]() {
+                if (!exportSnap.empty())
+                {
+                    int rc = NdndSimExportSnapshot(exportSnap.c_str());
+                    NS_ABORT_MSG_IF(rc != 0,
+                                    "NdndSimExportSnapshot failed for: " << exportSnap);
+                }
+                for (int i = 0; i < numPrefixes; ++i)
+                {
+                    Ptr<Node> node = edgeNodes.at(static_cast<size_t>(i) % edgeNodes.size());
+                    std::string nodeName = Names::FindName(node);
+                    auto stack = node->GetObject<NdndStack>();
+                    std::string prefix = "/data/" + nodeName + "/pfx" + std::to_string(i);
+                    stack->RegisterProducer(prefix);
+                }
+            });
+        }
+        else if (!exportSnap.empty())
+        {
+            RegisterRoutingConvergedCallback([exportSnap]() {
+                int rc = NdndSimExportSnapshot(exportSnap.c_str());
+                NS_ABORT_MSG_IF(rc != 0, "NdndSimExportSnapshot failed for: " << exportSnap);
+            });
+        }
     }
 
     std::shared_ptr<NdndLinkTracer> linkTracer;
@@ -142,6 +189,14 @@ main(int argc, char* argv[])
 
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+
+    // When importing a snapshot, export the post-run snapshot here (after prefix
+    // SVS sync has propagated) rather than inside the convergence callback.
+    if (!importSnap.empty() && !exportSnap.empty())
+    {
+        int rc = NdndSimExportSnapshot(exportSnap.c_str());
+        NS_ABORT_MSG_IF(rc != 0, "NdndSimExportSnapshot failed for: " << exportSnap);
+    }
 
     if (!convTrace.empty())
     {

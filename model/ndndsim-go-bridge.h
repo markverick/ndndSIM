@@ -177,6 +177,15 @@ extern "C"
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 
+    /** Export the DV routing state of all nodes to a JSON snapshot file.
+     *  Returns 0 on success, -1 on error. */
+    extern int NdndSimExportSnapshot(const char* path);
+
+    /** Import DV routing state for all nodes from a JSON snapshot file.
+     *  Must be called after NdndSimStartDv for all nodes but before the
+     *  simulator advances time.  Returns 0 on success, -1 on error. */
+    extern int NdndSimImportSnapshot(const char* path);
+
 #ifdef __cplusplus
 }
 

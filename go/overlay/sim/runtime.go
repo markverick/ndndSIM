@@ -67,3 +67,18 @@ func (r *Runtime) NodeCount() int {
 	defer r.mu.Unlock()
 	return len(r.nodes)
 }
+
+// IterNodes calls fn for each registered node. The runtime mutex is NOT held
+// during fn, so it is safe to call back into Runtime from within fn.
+func (r *Runtime) IterNodes(fn func(id uint32, node *Node)) {
+	r.mu.Lock()
+	snapshot := make(map[uint32]*Node, len(r.nodes))
+	for k, v := range r.nodes {
+		snapshot[k] = v
+	}
+	r.mu.Unlock()
+
+	for id, node := range snapshot {
+		fn(id, node)
+	}
+}

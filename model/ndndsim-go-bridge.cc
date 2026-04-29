@@ -255,8 +255,11 @@ OnRoutingConverged()
     }
     if (cb)
     {
-        // Schedule on simulator thread to ensure it runs in the right context
-        Simulator::ScheduleNow([cb = std::move(cb)]() { cb(); });
+        // Use ScheduleWithContext (thread-safe) instead of ScheduleNow which
+        // requires the caller to be on the ns-3 main thread.  The routing
+        // convergence observer fires from a Go goroutine, so ScheduleNow
+        // would trigger an NS_ASSERT abort.
+        Simulator::ScheduleWithContext(Simulator::NO_CONTEXT, Time(0), [cb = std::move(cb)]() { cb(); });
     }
 }
 

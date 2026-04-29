@@ -13,6 +13,7 @@ import (
 	"github.com/named-data/ndnd/std/ndn"
 	sig "github.com/named-data/ndnd/std/security/signer"
 	"github.com/named-data/ndnd/std/types/optional"
+	_ndndsim "github.com/named-data/ndndsim"
 )
 
 /*
@@ -395,10 +396,22 @@ func NdndSimFireEvent(nodeId C.uint32_t, eventId C.uint64_t) {
 		return
 	}
 	clock := val.(*Ns3Clock)
-	// Each scheduled callback manages its own BindNode/UnbindNode (GoFunc,
-	// AfterFunc, heartbeat, deadcheck, maintenance all install per-node
-	// bindings at entry).  No outer bind is needed here; adding one would
-	// create a double-unbind when the callback's own defer UnbindNode fires.
+	// Bind the node's hooks so that _ndndsim.AfterFunc/Go calls within the
+	// callback chain use the DES clock rather than real time.AfterFunc.
+	// Without this, callbacks scheduled via SimTimer.Schedule (e.g. the
+	// SimEngine.Express timeout) run without a node binding, causing
+	// _ndndsim.AfterFunc to fall back to productionHooks which uses
+	// time.AfterFunc — creating real goroutines that call ns-3 C++ APIs
+	// from non-main threads (SIGSEGV / NS_ASSERT).
+	//
+	// SwapNode/RestoreNode is used instead of BindNode/UnbindNode so that
+	// callbacks which install their own BindNode+UnbindNode (GoFunc, AfterFunc,
+	// heartbeat, deadcheck, maintenance) still work correctly: SwapNode saves
+	// and RestoreNode restores the prior state even after inner UnbindNode.
+	if node := globalRuntime.GetNode(uint32(nodeId)); node != nil {
+		prev := _ndndsim.SwapNode(node.Hooks())
+		defer _ndndsim.RestoreNode(prev)
+	}
 	clock.FireEvent(EventID(eventId))
 }
 
