@@ -382,24 +382,6 @@ func (pfx *PrefixModule) SuppressionStats() ndn_sync.SuppressStats {
 	return svs.SuppressionStats()
 }
 
-// ExportPfxSvsState exports the pfxSvs instance state as a TLV wire.
-// Returns nil if pfxSvs has not been started yet (no state to export).
-func (pfx *PrefixModule) ExportPfxSvsState() enc.Wire {
-	if pfx.pfxSvs == nil {
-		return nil
-	}
-	return pfx.pfxSvs.ExportInstanceState()
-}
-
-// ImportPfxSvsState restores the pfxSvs instance state from a previously
-// exported wire. Must be called before pfxSvs.Start().
-func (pfx *PrefixModule) ImportPfxSvsState(wire enc.Wire) error {
-	if pfx.pfxSvs == nil {
-		return nil
-	}
-	return pfx.pfxSvs.ImportInstanceState(wire)
-}
-
 // RestorePfxEntries populates the local PrefixEgreState with a previously
 // exported set of prefix snapshot entries. Should be called after Init() and
 // before pfxSvs.Start() so the prefix state is consistent from the start.
@@ -495,6 +477,29 @@ func (dv *Router) Cleanup() {
 
 // _pfxStarted tracks which Router instances have had pfxSvs.Start() called.
 var _pfxStarted sync.Map // *Router → struct{}
+
+// _snapGrace tracks Router instances that recently imported a snapshot.
+// While a Router is in grace mode, updatePrefixSubs will NOT remove
+// existing prefix subscriptions even if the router is temporarily unreachable
+// during DV re-convergence after snapshot import.
+var _snapGrace sync.Map // *Router → struct{}
+
+// _snapGraceActive reports whether dv is in snapshot-import grace mode.
+func _snapGraceActive(dv *Router) bool {
+	_, ok := _snapGrace.Load(dv)
+	return ok
+}
+
+// _snapGraceSet marks dv as being in grace mode.  The grace period lasts for
+// one RouterDeadInterval so that DV can re-converge before subscriptions are
+// pruned.
+func _snapGraceSet(dv *Router) {
+	_snapGrace.Store(dv, struct{}{})
+	interval := dv.config.RouterDeadInterval()
+	_ndndsim.AfterFunc(interval, func() {
+		_snapGrace.Delete(dv)
+	})
+}
 
 // _pfxCancel stores the cancel function for the pending pfxSvs startup timer.
 var _pfxCancel sync.Map // *Router → func()
@@ -625,9 +630,8 @@ type RouterSnapshotPfxNextHop struct {
 
 // RouterSnapshot is the full serialisable state of a Router instance.
 type RouterSnapshot struct {
-	Rib       []RouterSnapshotRibRow   ` + "`" + `json:"rib"` + "`" + `
-	Fib       []RouterSnapshotFibRow   ` + "`" + `json:"fib"` + "`" + `
-	PfxSvs    []byte                   ` + "`" + `json:"pfx_svs_state"` + "`" + `
+	Rib        []RouterSnapshotRibRow   ` + "`" + `json:"rib"` + "`" + `
+	Fib        []RouterSnapshotFibRow   ` + "`" + `json:"fib"` + "`" + `
 	PfxEntries []RouterSnapshotPfxEntry ` + "`" + `json:"pfx_entries"` + "`" + `
 }
 
@@ -640,15 +644,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 	pfxEntries := dv.pfx.SnapshotEntries()
 	dv.mutex.Unlock()
 
-	pfxSvsState := dv.pfx.ExportPfxSvsState()
-	var pfxSvsBytes []byte
-	for _, w := range pfxSvsState {
-		pfxSvsBytes = append(pfxSvsBytes, w...)
-	}
-
-	snap := RouterSnapshot{
-		PfxSvs: pfxSvsBytes,
-	}
+	snap := RouterSnapshot{}
 	for _, r := range ribRows {
 		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
 			Dest:    r.Dest.TlvStr(),
@@ -733,13 +729,11 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	}
 	dv.mutex.Unlock()
 	dv.pfx.RestorePfxEntries(pfxEntries)
-	// Restore SVS state.
-	if len(snap.PfxSvs) > 0 {
-		wire := enc.Wire{snap.PfxSvs}
-		if err := dv.pfx.ImportPfxSvsState(wire); err != nil {
-			return fmt.Errorf("ImportSnapshot: SVS state restore failed: %w", err)
-		}
-	}
+	// Do NOT restore SVS state: stage 2 announces fresh prefixes, so the prefix
+	// SVS must start from seqNo=0 (same as a non-snapshot run).
+
+	// Activate grace period: suppress prefix unsubscription during DV re-convergence.
+	_snapGraceSet(dv)
 	return nil
 }
 `
@@ -880,6 +874,59 @@ func applySvsAloChannels(file *ast.File) bool {
 			modified = true
 		}
 		return true
+	}, nil)
+	return modified
+}
+
+// applySnapshotEvictionDisableInSim wraps the eviction block in takeSnap
+// (snapshot_node_latest.go) with:
+//
+//	if !_ndndsim.IsSynchronous() { ... }
+//
+// In synchronous sim mode, MemoryStore has unlimited capacity, so evicting old
+// publications is unnecessary.  Without this guard, takeSnap() calls
+// RemoveFlatRange to erase seqno=0..N-3*Threshold once seqNo >= 4*Threshold.
+// In the 3-stage scenario all prefix announcements happen at t=0 before any
+// consumer can fetch them, so the eviction races ahead and removes data objects
+// that consumers need, causing all fetches to time out with "retries exhausted".
+func applySnapshotEvictionDisableInSim(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		ifStmt, ok := c.Node().(*ast.IfStmt)
+		if !ok || ifStmt.Init != nil {
+			return true
+		}
+		// Check if the body contains a RemoveFlatRange call.
+		containsEviction := false
+		ast.Inspect(ifStmt.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "RemoveFlatRange" {
+				containsEviction = true
+				return false
+			}
+			return true
+		})
+		if !containsEviction {
+			return true
+		}
+		// Wrap with: if !_ndndsim.IsSynchronous() { <original if> }
+		c.Replace(&ast.IfStmt{
+			Cond: &ast.UnaryExpr{
+				Op: token.NOT,
+				X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent("_ndndsim"),
+						Sel: ast.NewIdent("IsSynchronous"),
+					},
+				},
+			},
+			Body: &ast.BlockStmt{List: []ast.Stmt{ifStmt}},
+		})
+		modified = true
+		return false
 	}, nil)
 	return modified
 }
@@ -1254,6 +1301,29 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 // convergence hook invocation.
 var _pfxStarted sync.Map
 
+// _snapGrace tracks Router instances that recently imported a snapshot.
+// While a Router is in grace mode, updatePrefixSubs will NOT remove
+// existing prefix subscriptions even if the router is temporarily unreachable
+// during DV re-convergence after snapshot import.
+var _snapGrace sync.Map // *Router → struct{}
+
+// _snapGraceActive reports whether dv is in snapshot-import grace mode.
+func _snapGraceActive(dv *Router) bool {
+	_, ok := _snapGrace.Load(dv)
+	return ok
+}
+
+// _snapGraceSet marks dv as being in grace mode.  The grace period lasts for
+// one RouterDeadInterval so that DV can re-converge before subscriptions are
+// pruned.
+func _snapGraceSet(dv *Router) {
+	_snapGrace.Store(dv, struct{}{})
+	interval := dv.config.RouterDeadInterval()
+	_ndndsim.AfterFunc(interval, func() {
+		_snapGrace.Delete(dv)
+	})
+}
+
 // startPfxOnce starts the prefix SVS sync exactly once per Router instance.
 // In the onephase build Init() already calls pfxSvs.Start(); subsequent calls
 // from runConvergenceHook are deduplicated by _pfxStarted and are no-ops.
@@ -1281,9 +1351,8 @@ type RouterSnapshotFibRow struct {
 
 // RouterSnapshot is the full serialisable state of a Router instance.
 type RouterSnapshot struct {
-	Rib    []RouterSnapshotRibRow ` + "`" + `json:"rib"` + "`" + `
-	Fib    []RouterSnapshotFibRow ` + "`" + `json:"fib"` + "`" + `
-	PfxSvs []byte                ` + "`" + `json:"pfx_svs_state"` + "`" + `
+	Rib []RouterSnapshotRibRow ` + "`" + `json:"rib"` + "`" + `
+	Fib []RouterSnapshotFibRow ` + "`" + `json:"fib"` + "`" + `
 }
 
 // ExportSnapshot captures the current DV state into a RouterSnapshot.
@@ -1296,13 +1365,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 	fibRows := dv.fib.Snapshot()
 	dv.mutex.Unlock()
 
-	pfxSvsState := dv.pfxSvs.ExportInstanceState()
-	var pfxSvsBytes []byte
-	for _, w := range pfxSvsState {
-		pfxSvsBytes = append(pfxSvsBytes, w...)
-	}
-
-	snap := RouterSnapshot{PfxSvs: pfxSvsBytes}
+	snap := RouterSnapshot{}
 	for _, r := range ribRows {
 		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
 			Dest:    r.Dest.TlvStr(),
@@ -1350,12 +1413,21 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 		dv.fib.Update(name, entries)
 	}
 	dv.mutex.Unlock()
-	if len(snap.PfxSvs) > 0 {
-		wire := enc.Wire{snap.PfxSvs}
-		if err := dv.pfxSvs.ImportInstanceState(wire); err != nil {
-			return fmt.Errorf("ImportSnapshot: SVS state restore failed: %w", err)
-		}
-	}
+
+	// Do NOT restore SVS state: stage 2 announces fresh prefixes with a new
+	// boot time, so the prefix SVS must start from seqNo=0 (same as a
+	// non-snapshot run).  Importing the stage-1 SVS state is harmful because
+	// both stage 1 and stage 2 use bootTime=1 (sim time is 0 at start), so
+	// the imported Known=1 for boot=1 would overlap with stage-2 entries and
+	// cause seqNo=1 (the stage-2 Reset) to be silently skipped.
+
+	// updatePrefixSubs() is normally called from postUpdateRib(), but after
+	// a snapshot import the RIB is pre-populated without any RIB-change event,
+	// so subscriptions would never be established and remote prefixes would not
+	// propagate to this node's dv_prefix_table.
+	dv.updatePrefixSubs()
+	// Activate grace period: suppress prefix unsubscription during DV re-convergence.
+	_snapGraceSet(dv)
 	return nil
 }`
 

@@ -568,49 +568,11 @@ func (e *SimEngine) onData(data ndn.Data, raw enc.Wire, sigCovered enc.Wire, pit
 		}
 	}
 
-	// Fall back to name-based matching (scan all pending Interests).
-	// This path should rarely trigger -- log a warning so we can confirm.
-	log.Warn(nil, "Data matched by name fallback (no PIT token match)",
-		"name", data.Name().String())
-	dataName := data.Name()
-	e.pitLock.Lock()
-	var matchToken uint64
-	var matchPI *pendingInterest
-	for tok, pi := range e.pit {
-		if pi.canBePrefix {
-			// NDN CanBePrefix: Interest name is a prefix of the Data name.
-			// (NOT the reverse: dataName.IsPrefix(pi.name) would check
-			// whether the Data name is a prefix of the Interest name,
-			// which is semantically wrong and could match spuriously.)
-			if pi.name.IsPrefix(dataName) {
-				matchToken = tok
-				matchPI = pi
-				break
-			}
-		} else {
-			if pi.name.Equal(dataName) {
-				matchToken = tok
-				matchPI = pi
-				break
-			}
-		}
-	}
-	if matchPI != nil {
-		delete(e.pit, matchToken)
-	}
-	e.pitLock.Unlock()
-
-	if matchPI != nil && matchPI.callback != nil {
-		if matchPI.timeoutCancel != nil {
-			matchPI.timeoutCancel()
-		}
-		matchPI.callback(ndn.ExpressCallbackArgs{
-			Result:     ndn.InterestResultData,
-			Data:       data,
-			RawData:    raw,
-			SigCovered: sigCovered,
-		})
-	}
+	// No PIT entry matched: drop the Data packet.
+	// Name-based fallback matching is intentionally absent — if data arrives
+	// without a matching PIT token the Interest was already satisfied or
+	// timed out, and delivering the stale data would be incorrect.
+	log.Warn(nil, "Data dropped: no PIT token match", "name", data.Name().String())
 }
 
 // --- Minimal name trie for Interest dispatch ---

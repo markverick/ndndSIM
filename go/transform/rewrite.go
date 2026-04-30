@@ -41,7 +41,8 @@ ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
 rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() to postUpdateRib
 rulePrefixEventHooks                          // dv/table prefix announce/add hooks for convergence metrics
-
+ruleSnapGraceGuard                            // dv/dv/table_algo.go: guard UnsubscribePublisher with _snapGraceActive check
+	ruleSnapGraceFibGuard                         // dv/dv/table_algo.go: guard dv.fib.RemoveUnmarked() with _snapGraceActive check
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
 ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
@@ -63,7 +64,9 @@ ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
 ruleInjectFibStrategyTreeExtensionsOp // fw/table/fib-strategy-tree.go (onephase)
 ruleInjectThreadSimExtensionsOp       // fw/fw/thread.go (onephase: no simPet/simMulticastFib)
 ruleInjectRouterSimExtensionsOp       // dv/dv/router.go (onephase: pfxSvs.Start)
+	ruleDisablePfxSvsSnapshot             // dv/dv/router.go (onephase): SnapshotNodeLatest → SnapshotNull
 	ruleSnapshotDisableInSim              // std/sync/svs_alo_data.go: skip onUpdate in sim
+	ruleSnapshotEvictionDisableInSim      // std/sync/snapshot_node_latest.go: skip RemoveFlatRange eviction in sim
 )
 
 // targetRewrites returns the full set of package-level rewrite descriptors.
@@ -102,8 +105,8 @@ pkg("dv/table", map[string][]fileRule{
 "prefix_table.go": {rulePrefixEventHooks},
 }),
 pkg("dv/dv", map[string][]fileRule{
-	"table_algo.go": {rulePostUpdateRibConvergenceHook},
-"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp},
+	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceGuard, ruleSnapGraceFibGuard},
+"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot},
 }),
 pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
@@ -111,7 +114,8 @@ pkg("dv/nfdc", map[string][]fileRule{
 pkg("std/sync", map[string][]fileRule{
 "svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
 "svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
-"svs_alo_data.go": {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
+"svs_alo_data.go":         {ruleInjectSvsAloDataChannels},
+		"snapshot_node_latest.go": {ruleSnapshotEvictionDisableInSim},
 }),
 }
 }
@@ -141,7 +145,7 @@ pkg("dv/table", map[string][]fileRule{
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
-	"table_algo.go": {rulePostUpdateRibConvergenceHook},
+	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceFibGuard},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
 "prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions},
 }),
@@ -153,7 +157,8 @@ pkg("dv/nfdc", map[string][]fileRule{
 	pkg("std/sync", map[string][]fileRule{
 		"svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
 		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
-			"svs_alo_data.go": {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
+			"svs_alo_data.go":         {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
+			"snapshot_node_latest.go": {ruleSnapshotEvictionDisableInSim},
 }),
 }
 }
@@ -228,6 +233,12 @@ modified = applyDeadNonceListMutex(file, fset) || modified
 		case rulePostUpdateRibConvergenceHook:
 			modified = applyPostUpdateRibConvergenceHook(file) || modified
 
+		case ruleSnapGraceGuard:
+			modified = applySnapGraceGuard(file) || modified
+
+		case ruleSnapGraceFibGuard:
+			modified = applySnapGraceFibGuard(file) || modified
+
 		case rulePrefixEventHooks:
 			if applyPrefixEventHooks(file) {
 				modified = true
@@ -280,6 +291,16 @@ modified = applySvsSimExtensions(file, fset) || modified
 				ndndsimUsed = true
 			}
 
+		case ruleSnapshotEvictionDisableInSim:
+			// Wrap the RemoveFlatRange eviction block in takeSnap with
+			// if !_ndndsim.IsSynchronous() so it is skipped in sim mode.
+			// MemoryStore has unlimited capacity; eviction is not needed and
+			// breaks the 3-stage scenario where all announcements happen at t=0.
+			if applySnapshotEvictionDisableInSim(file) {
+				modified = true
+				ndndsimUsed = true
+			}
+
 		case ruleInjectThreadSimExtensions:
 // _ndndsim, defn, table already in thread.go; sync added inside.
 modified = applyThreadSimExtensions(file, fset) || modified
@@ -313,23 +334,27 @@ modified = applyThreadSimExtensionsOp(file, fset) || modified
 case ruleInjectRouterSimExtensionsOp:
 // Onephase: uses pfxSvs.Start/Stop instead of pfx.Start/Stop.
 modified = applyRouterSimExtensionsOp(file, fset) || modified
-}
-}
 
-if !modified {
-return nil
-}
-if ndndsimUsed {
-addNamedImport(file, "_ndndsim", simModule)
-}
-pruneUnusedPackageImports(fset, file)
+		case ruleDisablePfxSvsSnapshot:
+			// Onephase: replace SnapshotNodeLatest with SnapshotNull in
+			// createPrefixTable so the SVS-internal snapshot is fully disabled.
+			// The sim uses its own stage1→snap→stage2 mechanism instead.
+			modified = applyDisablePfxSvsSnapshot(file) || modified
+		}
+	}
 
-out, err := os.Create(fpath)
-if err != nil {
-return err
-}
-defer out.Close()
-return format.Node(out, fset, file)
-}
+	if !modified {
+		return nil
+	}
+	if ndndsimUsed {
+		addNamedImport(file, "_ndndsim", simModule)
+	}
+	pruneUnusedPackageImports(fset, file)
 
-
+	out, err := os.Create(fpath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return format.Node(out, fset, file)
+}

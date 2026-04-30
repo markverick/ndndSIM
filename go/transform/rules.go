@@ -628,6 +628,167 @@ func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
 	return false
 }
 
+// Rule: wrap the unsubscription body in updatePrefixSubs with a _snapGraceActive guard.
+//
+// In updatePrefixSubs, the block that removes subscriptions for unreachable routers:
+//
+//	if !dv.rib.Has(name) {
+//	    log.Info(...)
+//	    dv.pfxSvs.UnsubscribePublisher(name)
+//	    delete(dv.pfxSubs, hash)
+//	}
+//
+// is wrapped to become:
+//
+//	if !dv.rib.Has(name) {
+//	    if !_snapGraceActive(dv) {
+//	        log.Info(...)
+//	        dv.pfxSvs.UnsubscribePublisher(name)
+//	        delete(dv.pfxSubs, hash)
+//	    }
+//	}
+//
+// This prevents subscriptions added during snapshot import from being removed
+// during the transient DV re-convergence period that follows.
+func applySnapGraceGuard(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "updatePrefixSubs" || fd.Body == nil {
+			continue
+		}
+
+		modified := false
+		// Walk the function body looking for the for-range over dv.pfxSubs.
+		astutil.Apply(fd.Body, func(c *astutil.Cursor) bool {
+			ifStmt, ok := c.Node().(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+
+			// Match: if !dv.rib.Has(name) { ... }
+			unary, ok := ifStmt.Cond.(*ast.UnaryExpr)
+			if !ok || unary.Op != token.NOT {
+				return true
+			}
+			call, ok := unary.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Has" {
+				return true
+			}
+			// Check receiver is dv.rib
+			innerSel, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || innerSel.Sel.Name != "rib" {
+				return true
+			}
+
+			// Check that the body contains an UnsubscribePublisher call (guard
+			// against accidentally wrapping a different if block).
+			hasUnsub := false
+			for _, stmt := range ifStmt.Body.List {
+				exprStmt, ok := stmt.(*ast.ExprStmt)
+				if !ok {
+					continue
+				}
+				call2, ok := exprStmt.X.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				if sel2, ok := call2.Fun.(*ast.SelectorExpr); ok && sel2.Sel.Name == "UnsubscribePublisher" {
+					hasUnsub = true
+					break
+				}
+			}
+			if !hasUnsub {
+				return true
+			}
+
+			// Already guarded?
+			if len(ifStmt.Body.List) == 1 {
+				if inner, ok := ifStmt.Body.List[0].(*ast.IfStmt); ok {
+					if unary2, ok := inner.Cond.(*ast.UnaryExpr); ok {
+						if call3, ok := unary2.X.(*ast.CallExpr); ok {
+							if sel3, ok := call3.Fun.(*ast.Ident); ok && sel3.Name == "_snapGraceActive" {
+								return false
+							}
+						}
+					}
+				}
+			}
+
+			// Wrap the body in: if !_snapGraceActive(dv) { <original body> }
+			graceGuard := &ast.IfStmt{
+				Cond: &ast.UnaryExpr{
+					Op: token.NOT,
+					X: &ast.CallExpr{
+						Fun: ast.NewIdent("_snapGraceActive"),
+						Args: []ast.Expr{ast.NewIdent("dv")},
+					},
+				},
+				Body: &ast.BlockStmt{List: ifStmt.Body.List},
+			}
+			ifStmt.Body.List = []ast.Stmt{graceGuard}
+			modified = true
+			return false
+		}, nil)
+
+		return modified
+	}
+	return false
+}
+
+// applySnapGraceFibGuard wraps dv.fib.RemoveUnmarked() in updateFib with a
+// _snapGraceActive guard so that FIB entries are not deleted during the
+// transient DV re-convergence period after a snapshot import.  Without this
+// guard, Interests for SVS data packets are dropped when the FIB route to
+// the publisher is temporarily absent, causing Interest timeouts and the
+// 4s+2s retry delay that prevents far-away nodes from receiving all prefixes
+// within the simulation window.
+func applySnapGraceFibGuard(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "updateFib" || fd.Body == nil {
+			continue
+		}
+		modified := false
+		astutil.Apply(fd.Body, func(c *astutil.Cursor) bool {
+			exprStmt, ok := c.Node().(*ast.ExprStmt)
+			if !ok {
+				return true
+			}
+			call, ok := exprStmt.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "RemoveUnmarked" {
+				return true
+			}
+			// Match dv.fib.RemoveUnmarked()
+			innerSel, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || innerSel.Sel.Name != "fib" {
+				return true
+			}
+			c.Replace(&ast.IfStmt{
+				Cond: &ast.UnaryExpr{
+					Op: token.NOT,
+					X: &ast.CallExpr{
+						Fun:  ast.NewIdent("_snapGraceActive"),
+						Args: []ast.Expr{ast.NewIdent("dv")},
+					},
+				},
+				Body: &ast.BlockStmt{List: []ast.Stmt{exprStmt}},
+			})
+			modified = true
+			return false
+		}, nil)
+		return modified
+	}
+	return false
+}
+
 func applyPrefixEventHooks(file *ast.File) bool {
 	modified := false
 
@@ -1034,5 +1195,54 @@ func applyDeadNonceListMutex(file *ast.File, fset *token.FileSet) bool {
 	if modified {
 		astutil.AddImport(fset, file, "sync")
 	}
+	return modified
+}
+
+// ---------------------------------------------------------------------------
+// Rule: Snapshot: &ndn_sync.SnapshotNodeLatest{…} → &ndn_sync.SnapshotNull{}
+//       (router.go, onephase only)
+// ---------------------------------------------------------------------------
+
+// applyDisablePfxSvsSnapshot replaces the SVS-ALO snapshot strategy in
+// createPrefixTable from SnapshotNodeLatest to SnapshotNull, completely
+// disabling the SVS-internal publication-history snapshot.  The sim uses its
+// own stage1→snap→stage2 snapshot mechanism which is independent; the SVS
+// snapshot adds no value and interferes with sequential prefix delivery.
+func applyDisablePfxSvsSnapshot(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		kv, ok := c.Node().(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Snapshot" {
+			return true
+		}
+		unary, ok := kv.Value.(*ast.UnaryExpr)
+		if !ok || unary.Op != token.AND {
+			return true
+		}
+		lit, ok := unary.X.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := lit.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "SnapshotNodeLatest" {
+			return true
+		}
+		pkg := sel.X.(*ast.Ident).Name // "ndn_sync"
+		kv.Value = &ast.UnaryExpr{
+			Op: token.AND,
+			X: &ast.CompositeLit{
+				Type: &ast.SelectorExpr{
+					X:   ast.NewIdent(pkg),
+					Sel: ast.NewIdent("SnapshotNull"),
+				},
+			},
+		}
+		modified = true
+		return false
+	}, nil)
 	return modified
 }

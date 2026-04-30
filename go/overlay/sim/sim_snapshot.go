@@ -119,7 +119,7 @@ func NdndSimImportSnapshot(path *C.char) C.int {
 			importErr = fmt.Errorf("node %d: unmarshal snapshot: %w", id, err)
 			break
 		}
-		if err := sdv.Router().ImportSnapshot(snap); err != nil {
+		if err := sdv.ImportSnapshot(snap); err != nil {
 			importErr = fmt.Errorf("node %d: import snapshot: %w", id, err)
 			break
 		}
