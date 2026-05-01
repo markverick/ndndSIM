@@ -107,6 +107,11 @@ var (
 	dvSpanMu sync.Mutex
 	dvSpanByPrefix    map[string]*dvSpanMetric
 
+	// Prefix propagation: total count of PrefixEventAddRemotePrefix events
+	// received since simulation start. Used by C++ to detect when prefix
+	// propagation has stabilised (count stops growing).
+	prefixRemoteAddCount atomic.Int64
+
 	// Routing convergence: tracks when each node has reachable routes
 	// to all other nodes. Purely event-driven via RouterReachableEvent.
 	routingConvMu        sync.Mutex
@@ -160,6 +165,8 @@ func NdndSimInit(
 	routingConvFired = false
 	routingConvMu.Unlock()
 
+	prefixRemoteAddCount.Store(0)
+
 	dv_table.SetPrefixEventObserver(func(ev dv_table.PrefixEvent) {
 		key := ev.Name.TlvStr()
 		ns := ev.At.UnixNano()
@@ -182,6 +189,10 @@ func NdndSimInit(
 			}
 		}
 		dvSpanMu.Unlock()
+
+		if ev.Kind == dv_table.PrefixEventAddRemotePrefix {
+			prefixRemoteAddCount.Add(1)
+		}
 	})
 
 	dv_table.SetRouterReachableObserver(func(ev dv_table.RouterReachableEvent) {
@@ -464,6 +475,8 @@ func NdndSimDestroy() {
 	routingConvTotal = 0
 	routingConvMu.Unlock()
 
+	prefixRemoteAddCount.Store(0)
+
 	// Remove stale clock and consumer-flag entries left by DestroyAll.
 	// NdndSimDestroyNode removes them individually; NdndSimDestroy must
 	// clean up the remainder so a subsequent re-init starts with empty maps.
@@ -565,6 +578,16 @@ func NdndSimGetRoutingConvergenceNs(totalNodes C.int) C.int64_t {
 	// moment.
 
 	return C.int64_t(routingConvTimeNs - routingConvStartNs)
+}
+
+// NdndSimGetPrefixRemoteAddCount returns the total number of
+// PrefixEventAddRemotePrefix events received since the simulation started.
+// C++ callers may poll this value at regular intervals: when the count
+// stops increasing, prefix propagation has stabilised.
+//
+//export NdndSimGetPrefixRemoteAddCount
+func NdndSimGetPrefixRemoteAddCount() C.int64_t {
+	return C.int64_t(prefixRemoteAddCount.Load())
 }
 
 //export NdndSimGetAppFaceId

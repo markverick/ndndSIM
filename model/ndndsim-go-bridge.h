@@ -174,6 +174,11 @@ extern "C"
      *  Returns -1 if not all nodes have converged. */
     extern int64_t NdndSimGetRoutingConvergenceNs(int totalNodes);
 
+    /** Get the total number of PrefixEventAddRemotePrefix events received
+     *  since simulation start.  C++ may poll this value at regular intervals
+     *  to detect when prefix propagation has stabilised (count stops growing). */
+    extern int64_t NdndSimGetPrefixRemoteAddCount(void);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 
