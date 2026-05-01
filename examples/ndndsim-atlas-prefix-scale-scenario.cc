@@ -76,7 +76,7 @@ main(int argc, char* argv[])
     cmd.AddValue("traceInterval", "Link trace sampling interval in seconds", traceInterval);
     cmd.AddValue("stableWindow",
                  "Stability window in seconds for prefix convergence detection. "
-                 "The sim stops once NdndSimGetPrefixRemoteAddCount is unchanged for "
+                 "The sim stops once NdndSimGetConvergenceMetric is unchanged for "
                  "this long. Should be >= 2 * DV adv-interval (default: 2.0s).",
                  stableWindow);
     cmd.AddValue("dvConfig", "DV config JSON overlay (overrides defaults)", dvConfig);
@@ -150,27 +150,39 @@ main(int argc, char* argv[])
                 }
             });
 
-            // Stop the simulation once prefix propagation has converged rather
-            // than running for a fixed window.  We poll NdndSimGetPrefixRemoteAddCount
-            // every traceInterval: when the count has not increased for
-            // stableRoundsNeeded consecutive rounds (and is non-zero, meaning at
-            // least one prefix has been received), propagation has stabilised.
+            // Install an event-driven stop condition when stableWindow > 0.
+            // Used for twophase (ndnd@dv2): NdndSimGetConvergenceMetric() returns
+            // the sum of forwarder_pet entries across all nodes.  PET is updated
+            // synchronously with DV prefix events, so the count stops growing
+            // exactly when all remote prefix mappings are installed.  Stop once
+            // the count has risen above the baseline captured on the first poll
+            // AND has not changed for stableRoundsNeeded consecutive polls.
             //
-            // stableWindow (passed via --stableWindow) must span at least two full
-            // DV advertisement cycles to avoid stopping during inter-advertisement
-            // gaps.  The Python caller computes it as 2 * adv_interval_ms / 1000.
-            // When stableWindow <= 0 the checker is disabled and the simulation
-            // runs until the hard ceiling (--simTime).
+            // For onephase (ndnd@main), stableWindow is passed as 0 so the
+            // checker is disabled and the simulation runs until the hard
+            // --simTime ceiling.  In onephase the FIB is installed
+            // asynchronously (DV event → nfdc queue → FIB), so any
+            // polling-based stability signal fires prematurely.  The hard
+            // ceiling is set conservatively in the queue JSON (--window 40 for
+            // core_edge, --window 200 for rocketfuel_2914).
             if (stableWindow > 0)
             {
             const int stableRoundsNeeded =
                 std::max(1, static_cast<int>(stableWindow / traceInterval));
-            auto lastCount = std::make_shared<int64_t>(0);
+            auto baseCount = std::make_shared<int64_t>(-1); // -1 = not yet captured
+            auto lastCount = std::make_shared<int64_t>(-1);
             auto stableRounds = std::make_shared<int>(0);
             auto checkerPtr = std::make_shared<std::function<void()>>();
-            *checkerPtr = [checkerPtr, lastCount, stableRounds, traceInterval, stableRoundsNeeded]() {
-                int64_t count = NdndSimGetPrefixRemoteAddCount();
-                if (count > 0 && count == *lastCount)
+            *checkerPtr = [checkerPtr, baseCount, lastCount, stableRounds, traceInterval, stableRoundsNeeded]() {
+                int64_t raw = NdndSimGetConvergenceMetric();
+                if (*baseCount < 0)
+                {
+                    *baseCount = raw;
+                    *lastCount = raw;
+                    Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+                    return;
+                }
+                if (raw > *baseCount && raw == *lastCount)
                 {
                     if (++(*stableRounds) >= stableRoundsNeeded)
                     {
@@ -181,7 +193,7 @@ main(int argc, char* argv[])
                 else
                 {
                     *stableRounds = 0;
-                    *lastCount = count;
+                    *lastCount = raw;
                 }
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };

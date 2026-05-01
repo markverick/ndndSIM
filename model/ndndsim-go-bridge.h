@@ -179,6 +179,19 @@ extern "C"
      *  to detect when prefix propagation has stabilised (count stops growing). */
     extern int64_t NdndSimGetPrefixRemoteAddCount(void);
 
+    /** Phase-agnostic prefix convergence metric.
+     *  - twophase (ndnd@dv2): sum of forwarder_pet entries across all nodes.
+     *    The PET is updated synchronously with DV prefix events.
+     *  - onephase (ndnd@main): sum of forwarder_fib entries across all nodes.
+     *    The FIB is the ground truth; it is installed asynchronously after DV
+     *    prefix events, so NdndSimGetPrefixRemoteAddCount is unreliable for
+     *    onephase (fires before FIB installation completes).
+     *  Phase is detected automatically: forwarder_pet appears in
+     *  SimTableMetrics only for twophase nodes.
+     *  C++ callers poll this at traceInterval intervals; once stable for
+     *  stableWindow seconds, prefix convergence is complete. */
+    extern int64_t NdndSimGetConvergenceMetric(void);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 

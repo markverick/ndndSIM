@@ -590,6 +590,54 @@ func NdndSimGetPrefixRemoteAddCount() C.int64_t {
 	return C.int64_t(prefixRemoteAddCount.Load())
 }
 
+// NdndSimGetConvergenceMetric returns a phase-agnostic prefix convergence
+// counter. It iterates all simulation nodes and sums a table that reflects
+// the actual installed prefix state:
+//
+//   - twophase (ndnd@dv2): sums forwarder_pet entry counts. The PET is
+//     updated synchronously with DV prefix events, so this is the exact
+//     count of installed egress-prefix mappings.
+//   - onephase (ndnd@main): sums forwarder_fib entry counts. The FIB is
+//     installed asynchronously (DV event → RIB update → FIB install), so
+//     using the DV event counter (NdndSimGetPrefixRemoteAddCount) would fire
+//     before the FIB is fully populated.  The FIB count is the ground truth.
+//
+// Phase detection: forwarder_pet appears in SimTableMetrics() only for
+// twophase nodes (simPhaseTableMetrics returns it unconditionally); it is
+// absent in onephase. The function therefore detects the phase automatically.
+//
+// C++ callers poll this value at regular intervals; once it has been
+// unchanged for stableWindow / traceInterval rounds, prefix convergence is
+// complete and the simulation can be stopped.
+//
+//export NdndSimGetConvergenceMetric
+func NdndSimGetConvergenceMetric() C.int64_t {
+	if globalRuntime == nil {
+		return 0
+	}
+	var fibTotal, petTotal int64
+	hasPET := false
+	globalRuntime.IterNodes(func(_ uint32, node *Node) {
+		metrics := node.Forwarder.SimTableMetrics()
+		if dv := node.DvRouter(); dv != nil {
+			metrics = append(metrics, dv.Router().SimTableMetrics()...)
+		}
+		for _, m := range metrics {
+			switch m.Table {
+			case "forwarder_fib":
+				fibTotal += int64(m.EntryCount)
+			case "forwarder_pet":
+				petTotal += int64(m.EntryCount)
+				hasPET = true
+			}
+		}
+	})
+	if hasPET {
+		return C.int64_t(petTotal)
+	}
+	return C.int64_t(fibTotal)
+}
+
 //export NdndSimGetAppFaceId
 func NdndSimGetAppFaceId(nodeId C.uint32_t) C.uint64_t {
 	if globalRuntime == nil {
