@@ -150,21 +150,27 @@ main(int argc, char* argv[])
                 }
             });
 
-            // Install an event-driven stop condition when stableWindow > 0.
-            // Used for twophase (ndnd@dv2): NdndSimGetConvergenceMetric() returns
-            // the sum of forwarder_pet entries across all nodes.  PET is updated
-            // synchronously with DV prefix events, so the count stops growing
-            // exactly when all remote prefix mappings are installed.  Stop once
-            // the count has risen above the baseline captured on the first poll
-            // AND has not changed for stableRoundsNeeded consecutive polls.
+            // Install an event-driven stop condition based on stableWindow:
             //
-            // For onephase (ndnd@main), stableWindow is passed as 0 so the
-            // checker is disabled and the simulation runs until the hard
-            // --simTime ceiling.  In onephase the FIB is installed
-            // asynchronously (DV event → nfdc queue → FIB), so any
-            // polling-based stability signal fires prematurely.  The hard
-            // ceiling is set conservatively in the queue JSON (--window 40 for
-            // core_edge, --window 200 for rocketfuel_2914).
+            //   stableWindow > 0  →  stability window (twophase/ndnd@dv2):
+            //     NdndSimGetConvergenceMetric() sums forwarder_pet entries.
+            //     PET is updated synchronously with DV prefix events so the
+            //     count stabilises exactly when all prefix→router mappings are
+            //     installed.  Stop once the count has risen above the baseline
+            //     AND has been unchanged for stableRoundsNeeded polls.
+            //
+            //   stableWindow == 0  →  target-count (onephase/ndnd@main):
+            //     Every node acquires exactly numPrefixes new FIB entries when
+            //     fully converged, so the global delta is
+            //       numPrefixes × numNodes.
+            //     Baseline is read on the FIRST poll tick (not before
+            //     Simulator::Run()) so all t=0 DES events have already fired
+            //     and the FIB is in a consistent initial state.  Stops as soon
+            //     as the metric reaches baseCount + targetDelta, independent of
+            //     topology size, prefix count, or SVS periodic-timeout cycles.
+            //
+            //   stableWindow < 0  →  no event-driven stop; simulation runs to
+            //     the hard --simTime ceiling.
             if (stableWindow > 0)
             {
             const int stableRoundsNeeded =
@@ -199,6 +205,33 @@ main(int argc, char* argv[])
             };
             Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             } // if (stableWindow > 0)
+            else if (stableWindow == 0.0)
+            {
+            // Target-count checker: read baseline on first tick, then stop
+            // once metric >= baseCount + numPrefixes * numNodes.
+            const int64_t targetDelta = static_cast<int64_t>(numPrefixes) *
+                                        static_cast<int64_t>(nodes.GetN());
+            auto baseCount = std::make_shared<int64_t>(-1); // -1 = not yet read
+            auto checkerPtr = std::make_shared<std::function<void()>>();
+            *checkerPtr = [checkerPtr, baseCount, targetDelta, traceInterval]() {
+                int64_t raw = NdndSimGetConvergenceMetric();
+                if (*baseCount < 0)
+                {
+                    // First tick: t=0 DES events have all fired; safe to capture
+                    // the baseline FIB count.
+                    *baseCount = raw;
+                    Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+                    return;
+                }
+                if (raw >= *baseCount + targetDelta)
+                {
+                    Simulator::Stop();
+                    return;
+                }
+                Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            };
+            Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            } // else if (stableWindow == 0.0)
         }
     }
     else
