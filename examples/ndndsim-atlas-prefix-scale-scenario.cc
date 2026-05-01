@@ -63,6 +63,7 @@ main(int argc, char* argv[])
     std::string importSnap;
     double simTime = 40.0;
     double traceInterval = 0.05;
+    double stableWindow = 2.0;
     int numPrefixes = 0;
 
     CommandLine cmd;
@@ -73,6 +74,11 @@ main(int argc, char* argv[])
     cmd.AddValue("edgeNodes", "Comma-separated edge node names", edgeNodesCsv);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("traceInterval", "Link trace sampling interval in seconds", traceInterval);
+    cmd.AddValue("stableWindow",
+                 "Stability window in seconds for prefix convergence detection. "
+                 "The sim stops once NdndSimGetPrefixRemoteAddCount is unchanged for "
+                 "this long. Should be >= 2 * DV adv-interval (default: 2.0s).",
+                 stableWindow);
     cmd.AddValue("dvConfig", "DV config JSON overlay (overrides defaults)", dvConfig);
     cmd.AddValue("coreDvConfig", "DV config JSON overlay applied to core nodes",
                  coreDvConfig);
@@ -146,17 +152,27 @@ main(int argc, char* argv[])
 
             // Stop the simulation once prefix propagation has converged rather
             // than running for a fixed window.  We poll NdndSimGetPrefixRemoteAddCount
-            // every traceInterval: when the count has not increased for two
-            // consecutive rounds (and is non-zero, meaning at least one prefix
-            // has been received), propagation has stabilised.
+            // every traceInterval: when the count has not increased for
+            // stableRoundsNeeded consecutive rounds (and is non-zero, meaning at
+            // least one prefix has been received), propagation has stabilised.
+            //
+            // stableWindow (passed via --stableWindow) must span at least two full
+            // DV advertisement cycles to avoid stopping during inter-advertisement
+            // gaps.  The Python caller computes it as 2 * adv_interval_ms / 1000.
+            // When stableWindow <= 0 the checker is disabled and the simulation
+            // runs until the hard ceiling (--simTime).
+            if (stableWindow > 0)
+            {
+            const int stableRoundsNeeded =
+                std::max(1, static_cast<int>(stableWindow / traceInterval));
             auto lastCount = std::make_shared<int64_t>(0);
             auto stableRounds = std::make_shared<int>(0);
             auto checkerPtr = std::make_shared<std::function<void()>>();
-            *checkerPtr = [checkerPtr, lastCount, stableRounds, traceInterval]() {
+            *checkerPtr = [checkerPtr, lastCount, stableRounds, traceInterval, stableRoundsNeeded]() {
                 int64_t count = NdndSimGetPrefixRemoteAddCount();
                 if (count > 0 && count == *lastCount)
                 {
-                    if (++(*stableRounds) >= 2)
+                    if (++(*stableRounds) >= stableRoundsNeeded)
                     {
                         Simulator::Stop();
                         return;
@@ -170,6 +186,7 @@ main(int argc, char* argv[])
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };
             Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            } // if (stableWindow > 0)
         }
     }
     else
