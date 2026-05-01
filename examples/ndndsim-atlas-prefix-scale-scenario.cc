@@ -139,7 +139,20 @@ main(int argc, char* argv[])
 
         if (numPrefixes > 0)
         {
-            Simulator::Schedule(Seconds(0.0), [edgeNodes, numPrefixes]() {
+            // For the target-count checker (stableWindow == 0), delay prefix
+            // announcements so the baseline FIB count can be read cleanly.
+            // At t=0 the snapshot-import's pending RIB→FIB events fire AND the
+            // RegisterProducer calls add local FIB entries — both at the same
+            // simulated time, so there is no safe point to read a DV-only
+            // baseline after t=0 if announcements are also at t=0.
+            // Delaying announcements to t=announceDelay (0.5 s) lets us read
+            // the true DV-only FIB sum at t=announceDelay-traceInterval, well
+            // before any prefix entries exist.  The stability-window checker
+            // (stableWindow > 0) is unaffected because it detects convergence
+            // by watching the metric rise and stabilise, not by knowing the
+            // exact target count.
+            const double announceDelay = (stableWindow == 0.0) ? 0.5 : 0.0;
+            Simulator::Schedule(Seconds(announceDelay), [edgeNodes, numPrefixes]() {
                 for (int i = 0; i < numPrefixes; ++i)
                 {
                     Ptr<Node> node = edgeNodes.at(static_cast<size_t>(i) % edgeNodes.size());
@@ -207,22 +220,36 @@ main(int argc, char* argv[])
             } // if (stableWindow > 0)
             else if (stableWindow == 0.0)
             {
-            // Target-count checker: read baseline on first tick, then stop
-            // once metric >= baseCount + numPrefixes * numNodes.
+            // Target-count checker: read DV-only baseline just BEFORE the
+            // delayed prefix announcements fire (at t = announceDelay -
+            // traceInterval), then stop once the global FIB sum reaches
+            // baseCount + numPrefixes * numNodes.
+            //
+            // Why delayed baseline?  RegisterProducer fires at t=announceDelay
+            // and immediately installs local FIB entries on the announcing edge
+            // nodes (via nfdc.simExec → synchronous ExecMgmtCmd).  Reading the
+            // baseline at t=announceDelay-traceInterval guarantees:
+            //   • All snapshot-import t=0 RIB→FIB events have fired (they are
+            //     t=0 DES events; announceDelay-traceInterval >> 0).
+            //   • No prefix FIB entries yet (announcements haven't started).
+            // Target = baseCount + numPrefixes × numNodes is then exactly the
+            // fully-converged FIB sum, independent of topology size or timing.
             const int64_t targetDelta = static_cast<int64_t>(numPrefixes) *
                                         static_cast<int64_t>(nodes.GetN());
-            auto baseCount = std::make_shared<int64_t>(-1); // -1 = not yet read
+            auto baseCount = std::make_shared<int64_t>(-1);
+            const double captureTime = announceDelay - traceInterval;
+            Simulator::Schedule(Seconds(captureTime), [baseCount]() {
+                *baseCount = NdndSimGetConvergenceMetric();
+            });
             auto checkerPtr = std::make_shared<std::function<void()>>();
             *checkerPtr = [checkerPtr, baseCount, targetDelta, traceInterval]() {
-                int64_t raw = NdndSimGetConvergenceMetric();
                 if (*baseCount < 0)
                 {
-                    // First tick: t=0 DES events have all fired; safe to capture
-                    // the baseline FIB count.
-                    *baseCount = raw;
+                    // Baseline not yet captured; shouldn't happen but be safe.
                     Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
                     return;
                 }
+                int64_t raw = NdndSimGetConvergenceMetric();
                 if (raw >= *baseCount + targetDelta)
                 {
                     Simulator::Stop();
@@ -230,7 +257,8 @@ main(int argc, char* argv[])
                 }
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };
-            Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            // Start polling after announcements have fired.
+            Simulator::Schedule(Seconds(announceDelay + traceInterval), *checkerPtr);
             } // else if (stableWindow == 0.0)
         }
     }
