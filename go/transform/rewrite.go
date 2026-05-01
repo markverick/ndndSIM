@@ -58,6 +58,7 @@ ruleInjectThreadSimExtensions         // fw/fw/thread.go (twophase: includes sim
 ruleInjectNfdcSimExtensions           // dv/nfdc/nfdc.go  (needs _ndndsim import)
 ruleInjectPrefixSimExtensions         // dv/dv/prefix.go
 ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
+ruleSvsALOMaxPipelineSim              // dv/dv/prefix.go (twophase) + dv/dv/router.go (onephase)
 
 // Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
 // no MulticastStrategyTable, different router.go pfxSvs API).
@@ -106,7 +107,7 @@ pkg("dv/table", map[string][]fileRule{
 }),
 pkg("dv/dv", map[string][]fileRule{
 	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceGuard, ruleSnapGraceFibGuard},
-"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot},
+"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
 }),
 pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
@@ -147,7 +148,7 @@ pkg("dv/table", map[string][]fileRule{
 pkg("dv/dv", map[string][]fileRule{
 	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceFibGuard},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
-"prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions},
+"prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions, ruleSvsALOMaxPipelineSim},
 }),
 // dv/nfdc: inject simExec (eliminates nfdc_sim.go overlay).
 pkg("dv/nfdc", map[string][]fileRule{
@@ -340,6 +341,17 @@ modified = applyRouterSimExtensionsOp(file, fset) || modified
 			// createPrefixTable so the SVS-internal snapshot is fully disabled.
 			// The sim uses its own stage1→snap→stage2 mechanism instead.
 			modified = applyDisablePfxSvsSnapshot(file) || modified
+
+		case ruleSvsALOMaxPipelineSim:
+			// Both phases: inject MaxPipelineSize: _ndndsim.SvsMaxPipelineSize()
+			// into the SvsAloOpts used for prefix sync so all objects are fetched
+			// in a single RTT batch during simulation.
+			// _ndndsim is already imported in both prefix.go (twophase) and
+			// router.go (onephase) by the global go→_ndndsim.Go rewrite.
+			if applySetSvsALOMaxPipeline(file) {
+				modified = true
+				ndndsimUsed = true
+			}
 		}
 	}
 

@@ -272,3 +272,19 @@ func EnableFaceEvents() bool {
 func IsSynchronous() bool {
 	return GetHooks().Synchronous
 }
+
+// SvsMaxPipelineSize returns the SVS-ALO per-publisher fetch pipeline size.
+//
+// Empirically the production default of 10 throttles convergence on large
+// topologies / high prefix counts.  An unlimited pipeline causes Interest
+// bursts that overflow link queues (queue_size=100) when many objects must be
+// fetched from a single publisher in stage2 (post-snapshot announce), causing
+// retry exhaustion and permanent data loss.  20 is a balance: 2× faster than
+// default, well under typical queue capacity.
+// In production the default (0 → 10) applies.
+func SvsMaxPipelineSize() uint64 {
+	if GetHooks().Synchronous {
+		return 20
+	}
+	return 0
+}

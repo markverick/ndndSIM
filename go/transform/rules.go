@@ -1199,6 +1199,67 @@ func applyDeadNonceListMutex(file *ast.File, fset *token.FileSet) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Rule: inject MaxPipelineSize into SvsAloOpts composite literal
+//       (prefix.go twophase, router.go onephase)
+// ---------------------------------------------------------------------------
+
+// applySetSvsALOMaxPipeline finds the SvsAloOpts{...} composite literal inside
+// the NewSvsALO() call used for prefix sync and injects:
+//
+//	MaxPipelineSize: _ndndsim.SvsMaxPipelineSize(),
+//
+// In simulation IsSynchronous()=true so SvsMaxPipelineSize() returns 1<<20,
+// making all pending data objects fetch in a single RTT batch.  In production
+// the 0 default applies (capped to 10 inside NewSvsALO).
+func applySetSvsALOMaxPipeline(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		call, ok := c.Node().(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			// also accept bare NewSvsALO (same package) — e.g. onephase router.go
+			if id, ok2 := call.Fun.(*ast.Ident); !ok2 || id.Name != "NewSvsALO" {
+				return true
+			}
+		} else if sel.Sel.Name != "NewSvsALO" {
+			return true
+		}
+		if len(call.Args) != 1 {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		// Avoid double-injection.
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "MaxPipelineSize" {
+				return false
+			}
+		}
+		lit.Elts = append(lit.Elts, &ast.KeyValueExpr{
+			Key: ast.NewIdent("MaxPipelineSize"),
+			Value: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("_ndndsim"),
+					Sel: ast.NewIdent("SvsMaxPipelineSize"),
+				},
+			},
+		})
+		modified = true
+		return false
+	}, nil)
+	return modified
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Snapshot: &ndn_sync.SnapshotNodeLatest{…} → &ndn_sync.SnapshotNull{}
 //       (router.go, onephase only)
 // ---------------------------------------------------------------------------
