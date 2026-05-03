@@ -41,7 +41,11 @@ if [[ "$NDND_PHASE" == "onephase" ]]; then
     NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-main}"
 else
     # named-data/ndnd@dv2 — pristine upstream dv2 commit.
-    NDND_HASH="${NDND_HASH:-76aeb89c}"
+    # bbe06d2: "dv: move pes sync under localhop" — fixes PES SVS broadcast
+    # bug where Interests forwarded by FIB after delivery to local faces
+    # caused duplicate/looped traffic. PES SVS prefix now /localhop/<net>/...
+    # and forwarder early-returns for /localhop multicast after local delivery.
+    NDND_HASH="${NDND_HASH:-bbe06d2}"
     NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-dv2}"
 fi
 
