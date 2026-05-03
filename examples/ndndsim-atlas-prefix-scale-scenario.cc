@@ -287,12 +287,40 @@ main(int argc, char* argv[])
         }
         else if (!exportSnap.empty())
         {
-            RegisterRoutingConvergedCallback([exportSnap]() {
-                int rc = NdndSimExportSnapshot(exportSnap.c_str());
-                NS_ABORT_MSG_IF(rc != 0, "NdndSimExportSnapshot failed for: " << exportSnap);
-                // Stop immediately after snapshot export: no prefixes to propagate,
-                // so there is no reason to continue simulating past DV convergence.
-                Simulator::Stop();
+            // After DV routing converges, keep running until the SVS-ALO
+            // metric (PET sum for twophase, FIB sum for onephase) stabilises.
+            // Stopping immediately at routing convergence would capture an
+            // underconverged PET/PfxEntries state on larger topologies where
+            // SVS propagation takes longer than DV convergence.  The same
+            // stability-window poller used in stage-2 is reused here so the
+            // snapshot timing is correct regardless of topology size or delay.
+            RegisterRoutingConvergedCallback([exportSnap, stableWindow, traceInterval]() {
+                auto lastMetric = std::make_shared<int64_t>(-1);
+                auto stableFor  = std::make_shared<double>(0.0);
+                auto checkerPtr = std::make_shared<std::function<void()>>();
+                *checkerPtr = [checkerPtr, exportSnap, stableWindow, traceInterval,
+                                lastMetric, stableFor]() {
+                    int64_t cur = NdndSimGetConvergenceMetric();
+                    if (cur == *lastMetric)
+                    {
+                        *stableFor += traceInterval;
+                    }
+                    else
+                    {
+                        *lastMetric = cur;
+                        *stableFor  = 0.0;
+                    }
+                    if (*stableFor >= stableWindow)
+                    {
+                        int rc = NdndSimExportSnapshot(exportSnap.c_str());
+                        NS_ABORT_MSG_IF(rc != 0,
+                                        "NdndSimExportSnapshot failed for: " << exportSnap);
+                        Simulator::Stop();
+                        return;
+                    }
+                    Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+                };
+                Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             });
         }
     }
