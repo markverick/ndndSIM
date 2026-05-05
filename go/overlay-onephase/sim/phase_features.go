@@ -26,6 +26,10 @@ func addSimPetNextHop(any, enc.Name, uint64, uint64) {}
 
 func removeSimPetNextHop(any, enc.Name, uint64) {}
 
+func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
+	fwd.fib.InsertNextHopEnc(defn.LOCAL_PREFIX, faceID, 0)
+}
+
 func execSimPetMgmtCmd(*SimForwarder, string, *mgmt.ControlArgs, uint64) (any, error) {
 	return nil, fmt.Errorf("SimEngine: unsupported mgmt cmd pet")
 }

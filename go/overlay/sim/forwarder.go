@@ -93,8 +93,15 @@ func NewSimForwarder(clock Clock, hooks *_ndndsim.NodeHooks) *SimForwarder {
 	return fwd
 }
 
-// Start schedules periodic maintenance.
+// Start schedules periodic maintenance and registers the management localhost
+// entry, mirroring what mgmt.Thread.Run() does in a real ndnd daemon.
 func (fwd *SimForwarder) Start() {
+	// In a real ndnd daemon, mgmt.Thread.Run() creates an internal face and
+	// registers /localhost/nfd into PET (twophase) or FIB (onephase) so that
+	// management traffic is properly scoped. Sim has no management socket, so
+	// we create a synthetic no-op face to carry this entry accurately.
+	mgmtFaceID := fwd.AddFace(defn.Local, defn.PointToPoint, func(uint64, []byte) {})
+	registerMgmtLocalhost(fwd, mgmtFaceID)
 	fwd.scheduleMaintenance()
 }
 

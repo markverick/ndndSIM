@@ -35,6 +35,10 @@ func removeSimPetNextHop(pet any, name enc.Name, faceID uint64) {
 	pet.(*table.PrefixEgressTable).RemoveNextHopEnc(name, faceID)
 }
 
+func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
+	addSimPetNextHop(fwd.pet, defn.LOCAL_PREFIX, faceID, 0)
+}
+
 // decodeEgressRouter copies the EgressRouter from an incoming LP header into
 // the packet, then strips it if it names this node so the forwarding pipeline
 // takes fwUnicastIngress (→ PET lookup → local delivery) rather than
