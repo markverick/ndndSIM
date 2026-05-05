@@ -43,6 +43,7 @@ rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.
 rulePrefixEventHooks                          // dv/table prefix announce/add hooks for convergence metrics
 ruleSnapGraceGuard                            // dv/dv/table_algo.go: guard UnsubscribePublisher with _snapGraceActive check
 	ruleSnapGraceFibGuard                         // dv/dv/table_algo.go: guard dv.fib.RemoveUnmarked() with _snapGraceActive check
+	ruleSnapGraceRibPruneGuard                    // dv/dv/table_algo.go: guard dv.rib.DirtyResetNextHop() in updateRib() with _snapGraceActive check
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
 ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
@@ -106,7 +107,7 @@ pkg("dv/table", map[string][]fileRule{
 "prefix_table.go": {rulePrefixEventHooks},
 }),
 pkg("dv/dv", map[string][]fileRule{
-	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceGuard, ruleSnapGraceFibGuard},
+		"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceGuard, ruleSnapGraceFibGuard, ruleSnapGraceRibPruneGuard},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
 }),
 pkg("dv/nfdc", map[string][]fileRule{
@@ -146,7 +147,7 @@ pkg("dv/table", map[string][]fileRule{
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
-	"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceFibGuard},
+		"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceFibGuard, ruleSnapGraceRibPruneGuard},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
 "prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions, ruleSvsALOMaxPipelineSim},
 }),
@@ -239,6 +240,9 @@ modified = applyDeadNonceListMutex(file, fset) || modified
 
 		case ruleSnapGraceFibGuard:
 			modified = applySnapGraceFibGuard(file) || modified
+
+		case ruleSnapGraceRibPruneGuard:
+			modified = applySnapGraceRibPruneGuard(file) || modified
 
 		case rulePrefixEventHooks:
 			if applyPrefixEventHooks(file) {

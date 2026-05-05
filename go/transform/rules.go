@@ -789,6 +789,61 @@ func applySnapGraceFibGuard(file *ast.File) bool {
 	return false
 }
 
+// applySnapGraceRibPruneGuard wraps dv.rib.DirtyResetNextHop() in updateRib()
+// with a _snapGraceActive guard so that the RIB entries restored from a
+// snapshot are not overwritten on the first DV heartbeat from each neighbor.
+//
+// Without this guard, the sequence is:
+//   1. DirtyResetNextHop(N) marks all snap-imported routes via N as CostInfinity
+//   2. rib.Set() re-adds whatever N includes in its first (possibly incomplete) advert
+//   3. Prune() permanently deletes destinations N didn't include → broken FIB
+//
+// With the guard, during snap-grace rib.Set() only adds/updates routes;
+// snap-imported routes that N doesn't re-advertise immediately are preserved
+// at their imported cost.  After grace expires, normal DV operation resumes
+// and any genuinely stale routes are cleaned up in the next DV cycle.
+func applySnapGraceRibPruneGuard(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil || fd.Name.Name != "updateRib" {
+			continue
+		}
+		astutil.Apply(fd.Body, func(c *astutil.Cursor) bool {
+			exprStmt, ok := c.Node().(*ast.ExprStmt)
+			if !ok {
+				return true
+			}
+			// Match: dv.rib.DirtyResetNextHop(...)
+			call, ok := exprStmt.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "DirtyResetNextHop" {
+				return true
+			}
+			innerSel, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || innerSel.Sel.Name != "rib" {
+				return true
+			}
+			c.Replace(&ast.IfStmt{
+				Cond: &ast.UnaryExpr{
+					Op: token.NOT,
+					X: &ast.CallExpr{
+						Fun:  ast.NewIdent("_snapGraceActive"),
+						Args: []ast.Expr{ast.NewIdent("dv")},
+					},
+				},
+				Body: &ast.BlockStmt{List: []ast.Stmt{exprStmt}},
+			})
+			modified = true
+			return false
+		}, nil)
+	}
+	return modified
+}
+
 func applyPrefixEventHooks(file *ast.File) bool {
 	modified := false
 
