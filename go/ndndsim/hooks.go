@@ -15,6 +15,7 @@
 package ndndsim
 
 import (
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -282,8 +283,15 @@ func IsSynchronous() bool {
 // retry exhaustion and permanent data loss.  20 is a balance: 2× faster than
 // default, well under typical queue capacity.
 // In production the default (0 → 10) applies.
+//
+// Override at runtime with the NDNDSIM_SVS_PIPELINE env var (simulation only).
 func SvsMaxPipelineSize() uint64 {
 	if GetHooks().Synchronous {
+		if s := os.Getenv("NDNDSIM_SVS_PIPELINE"); s != "" {
+			if v, err := strconv.ParseUint(s, 10, 64); err == nil {
+				return v
+			}
+		}
 		return 20
 	}
 	return 0

@@ -112,6 +112,14 @@ var (
 	// propagation has stabilised (count stops growing).
 	prefixRemoteAddCount atomic.Int64
 
+	// lastAdvTimeNs is the ns-3 simulation time (nanoseconds) of the most
+	// recent DV advertisement heartbeat fired by any node.  Stamped by
+	// scheduleHeartbeat in dv.go immediately after RunHeartbeat().  C++ uses
+	// this to detect advertisement silence: if (now - lastAdvTimeNs) >
+	// adv_interval + epsilon, no advertisements are in-flight and prefix
+	// convergence is complete.
+	lastAdvTimeNs atomic.Int64
+
 	// Routing convergence: tracks when each node has reachable routes
 	// to all other nodes. Purely event-driven via RouterReachableEvent.
 	routingConvMu        sync.Mutex
@@ -636,6 +644,17 @@ func NdndSimGetConvergenceMetric() C.int64_t {
 		return C.int64_t(petTotal)
 	}
 	return C.int64_t(fibTotal)
+}
+
+// NdndSimGetLastAdvTimeNs returns the ns-3 simulation time (nanoseconds) when
+// any DV node last fired a heartbeat advertisement.  C++ uses this to detect
+// advertisement silence: once (now_ns - NdndSimGetLastAdvTimeNs()) exceeds
+// adv_interval + epsilon, no DV advertisements are in-flight and prefix
+// convergence can be declared complete.  Returns 0 before the first heartbeat.
+//
+//export NdndSimGetLastAdvTimeNs
+func NdndSimGetLastAdvTimeNs() C.int64_t {
+	return C.int64_t(lastAdvTimeNs.Load())
 }
 
 //export NdndSimGetAppFaceId

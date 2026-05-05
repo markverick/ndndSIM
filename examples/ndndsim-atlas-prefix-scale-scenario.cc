@@ -45,6 +45,12 @@ SplitCsv(const std::string& text)
     return items;
 }
 
+void
+CountMacTxDrop(uint64_t* cnt, Ptr<const Packet>)
+{
+    ++(*cnt);
+}
+
 } // namespace
 
 int
@@ -61,10 +67,13 @@ main(int argc, char* argv[])
     std::string edgeNodesCsv;
     std::string exportSnap;
     std::string importSnap;
+    std::string dropTrace;
+    int targetNodes = 0; // 0 = use all nodes (onephase); >0 overrides multiplier (twophase: edge nodes)
     double simTime = 40.0;
     double traceInterval = 0.05;
     double stableWindow = 2.0;
     int numPrefixes = 0;
+    double announceGapMs = 0.0;
 
     CommandLine cmd;
     cmd.AddValue("topo", "Topology file path (required)", topoFile);
@@ -90,6 +99,17 @@ main(int argc, char* argv[])
                  exportSnap);
     cmd.AddValue("importSnap", "Import DV snapshot from this JSON file before simulation starts",
                  importSnap);
+    cmd.AddValue("announceGap",
+                 "Gap in milliseconds between successive edge-node prefix announcements. "
+                 "0 (default) means all nodes announce simultaneously.",
+                 announceGapMs);
+    cmd.AddValue("dropTrace", "Output file path for total MacTxDrop count (optional)",
+                 dropTrace);
+    cmd.AddValue("targetNodes",
+                 "Node count multiplier for target-count checker (stableWindow==0). "
+                 "0 (default) = use total node count (onephase). "
+                 "Set to number of edge nodes for twophase (PET is only on edge nodes).",
+                 targetNodes);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(topoFile.empty(), "--topo is required");
@@ -152,25 +172,33 @@ main(int argc, char* argv[])
             // by watching the metric rise and stabilise, not by knowing the
             // exact target count.
             const double announceDelay = (stableWindow == 0.0) ? 0.5 : 0.0;
-            Simulator::Schedule(Seconds(announceDelay), [edgeNodes, numPrefixes]() {
-                for (int i = 0; i < numPrefixes; ++i)
-                {
-                    Ptr<Node> node = edgeNodes.at(static_cast<size_t>(i) % edgeNodes.size());
-                    std::string nodeName = Names::FindName(node);
-                    auto stack = node->GetObject<NdndStack>();
-                    std::string prefix = "/data/" + nodeName + "/pfx" + std::to_string(i);
-                    stack->RegisterProducer(prefix);
-                }
-            });
+            const double gapS = announceGapMs / 1000.0;
+            // Schedule each prefix individually, staggered by edge-node index.
+            // Prefix i is assigned round-robin to edgeNodes[i % N], so it fires
+            // at announceDelay + (i % N) * gapS.  When gapS == 0 all fire at the
+            // same time, reproducing the original simultaneous-burst behaviour.
+            for (int i = 0; i < numPrefixes; ++i)
+            {
+                size_t nodeIdx = static_cast<size_t>(i) % edgeNodes.size();
+                Ptr<Node> node = edgeNodes.at(nodeIdx);
+                std::string nodeName = Names::FindName(node);
+                std::string prefix = "/data/" + nodeName + "/pfx" + std::to_string(i);
+                double t = announceDelay + static_cast<double>(nodeIdx) * gapS;
+                Simulator::Schedule(Seconds(t), [node, prefix]() {
+                    node->GetObject<NdndStack>()->RegisterProducer(prefix);
+                });
+            }
 
             // Install an event-driven stop condition based on stableWindow:
             //
-            //   stableWindow > 0  →  stability window (twophase/ndnd@dv2):
-            //     NdndSimGetConvergenceMetric() sums forwarder_pet entries.
-            //     PET is updated synchronously with DV prefix events so the
-            //     count stabilises exactly when all prefix→router mappings are
-            //     installed.  Stop once the count has risen above the baseline
-            //     AND has been unchanged for stableRoundsNeeded polls.
+            //   stableWindow > 0  →  advertisement-silence checker (twophase):
+            //     Stops once no DV heartbeat has fired for stableWindow seconds
+            //     AND the convergence metric has risen above its baseline.
+            //     Set stableWindow = adv_interval + epsilon (e.g. 1.1 s for a
+            //     1 s adv interval): after the last advertisement, all nodes
+            //     will have processed it within one adv_interval, so silence
+            //     for slightly longer than adv_interval is sufficient proof of
+            //     convergence regardless of topology diameter.
             //
             //   stableWindow == 0  →  target-count (onephase/ndnd@main):
             //     Every node acquires exactly numPrefixes new FIB entries when
@@ -186,33 +214,40 @@ main(int argc, char* argv[])
             //     the hard --simTime ceiling.
             if (stableWindow > 0)
             {
-            const int stableRoundsNeeded =
-                std::max(1, static_cast<int>(stableWindow / traceInterval));
+            // Metric-quiescence checker: stop once the convergence metric has
+            // risen above baseline AND has not changed for silenceNs nanoseconds.
+            //
+            // The DV heartbeat fires periodically forever, so "no heartbeat" is
+            // never observed.  Instead we track the last sim time the metric
+            // changed.  Once it has been stable for adv_interval + epsilon, all
+            // in-flight prefix advertisements have been processed and PET/FIB is
+            // fully converged.
+            const int64_t silenceNs = static_cast<int64_t>(stableWindow * 1e9);
             auto baseCount = std::make_shared<int64_t>(-1); // -1 = not yet captured
             auto lastCount = std::make_shared<int64_t>(-1);
-            auto stableRounds = std::make_shared<int>(0);
+            auto lastChangeNs = std::make_shared<int64_t>(-1); // sim ns when metric last changed
             auto checkerPtr = std::make_shared<std::function<void()>>();
-            *checkerPtr = [checkerPtr, baseCount, lastCount, stableRounds, traceInterval, stableRoundsNeeded]() {
+            *checkerPtr = [checkerPtr, baseCount, lastCount, lastChangeNs, silenceNs, traceInterval]() {
                 int64_t raw = NdndSimGetConvergenceMetric();
                 if (*baseCount < 0)
                 {
                     *baseCount = raw;
                     *lastCount = raw;
+                    *lastChangeNs = Simulator::Now().GetNanoSeconds();
                     Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
                     return;
                 }
-                if (raw > *baseCount && raw == *lastCount)
+                int64_t nowNs = Simulator::Now().GetNanoSeconds();
+                if (raw != *lastCount)
                 {
-                    if (++(*stableRounds) >= stableRoundsNeeded)
-                    {
-                        Simulator::Stop();
-                        return;
-                    }
-                }
-                else
-                {
-                    *stableRounds = 0;
                     *lastCount = raw;
+                    *lastChangeNs = nowNs;
+                }
+                // Stop once metric has risen above baseline and been stable for silenceNs.
+                if (raw > *baseCount && (nowNs - *lastChangeNs) >= silenceNs)
+                {
+                    Simulator::Stop();
+                    return;
                 }
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };
@@ -234,8 +269,10 @@ main(int argc, char* argv[])
             //   • No prefix FIB entries yet (announcements haven't started).
             // Target = baseCount + numPrefixes × numNodes is then exactly the
             // fully-converged FIB sum, independent of topology size or timing.
-            const int64_t targetDelta = static_cast<int64_t>(numPrefixes) *
-                                        static_cast<int64_t>(nodes.GetN());
+            const int64_t multiplier = (targetNodes > 0)
+                ? static_cast<int64_t>(targetNodes)
+                : static_cast<int64_t>(nodes.GetN());
+            const int64_t targetDelta = static_cast<int64_t>(numPrefixes) * multiplier;
             auto baseCount = std::make_shared<int64_t>(-1);
             const double captureTime = announceDelay - traceInterval;
             Simulator::Schedule(Seconds(captureTime), [baseCount]() {
@@ -260,6 +297,44 @@ main(int argc, char* argv[])
             // Start polling after announcements have fired.
             Simulator::Schedule(Seconds(announceDelay + traceInterval), *checkerPtr);
             } // else if (stableWindow == 0.0)
+        }
+        else if (stableWindow > 0)
+        {
+            // p0 + snap-import: no prefix announcements, so the target-count and
+            // stability-window checkers above are skipped.  Install a simpler
+            // "stable-only" poller: stop once the FIB/PET metric has been
+            // unchanged for stableWindow seconds (no requirement to rise, since
+            // zero prefixes means PET may stay at 0 the whole time).
+            const int stableRoundsNeeded =
+                std::max(1, static_cast<int>(stableWindow / traceInterval));
+            auto lastCount = std::make_shared<int64_t>(-1);
+            auto stableRounds = std::make_shared<int>(0);
+            auto checkerPtr = std::make_shared<std::function<void()>>();
+            *checkerPtr = [checkerPtr, lastCount, stableRounds,
+                           traceInterval, stableRoundsNeeded]() {
+                int64_t raw = NdndSimGetConvergenceMetric();
+                if (*lastCount < 0)
+                {
+                    *lastCount = raw;
+                    Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+                    return;
+                }
+                if (raw == *lastCount)
+                {
+                    if (++(*stableRounds) >= stableRoundsNeeded)
+                    {
+                        Simulator::Stop();
+                        return;
+                    }
+                }
+                else
+                {
+                    *stableRounds = 0;
+                    *lastCount = raw;
+                }
+                Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            };
+            Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
         }
     }
     else
@@ -322,6 +397,22 @@ main(int argc, char* argv[])
                 };
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             });
+        }
+    }
+
+    // Drop counter: count MacTxDrop (queue-full drops) across all devices.
+    uint64_t totalDrops = 0;
+    if (!dropTrace.empty())
+    {
+        for (uint32_t i = 0; i < nodes.GetN(); ++i)
+        {
+            Ptr<Node> node = nodes.Get(i);
+            for (uint32_t j = 0; j < node->GetNDevices(); ++j)
+            {
+                node->GetDevice(j)->TraceConnectWithoutContext(
+                    "MacTxDrop",
+                    MakeBoundCallback(&CountMacTxDrop, &totalDrops));
+            }
         }
     }
 
@@ -398,6 +489,13 @@ main(int argc, char* argv[])
     if (linkTracer)
     {
         linkTracer->Stop();
+    }
+
+    if (!dropTrace.empty())
+    {
+        std::ofstream ofs(dropTrace);
+        NS_ABORT_MSG_IF(!ofs, "Failed to open dropTrace output: " << dropTrace);
+        ofs << totalDrops << "\n";
     }
 
     NdndStackHelper::DestroyBridge();

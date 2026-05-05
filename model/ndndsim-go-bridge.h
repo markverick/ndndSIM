@@ -192,6 +192,14 @@ extern "C"
      *  stableWindow seconds, prefix convergence is complete. */
     extern int64_t NdndSimGetConvergenceMetric(void);
 
+    /** Returns the ns-3 simulation time (nanoseconds) of the most recent DV
+     *  heartbeat advertisement fired by any node.  C++ uses this to detect
+     *  advertisement silence: if (Simulator::Now().GetNanoSeconds() -
+     *  NdndSimGetLastAdvTimeNs()) > adv_interval_ns + epsilon, no DV
+     *  advertisements are in-flight and convergence is complete.
+     *  Returns 0 before the first heartbeat fires. */
+    extern int64_t NdndSimGetLastAdvTimeNs(void);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 
