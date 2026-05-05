@@ -39,6 +39,49 @@ func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
 	addSimPetNextHop(fwd.pet, defn.LOCAL_PREFIX, faceID, 0)
 }
 
+// exportSimPetSnapshot serialises the forwarder PET into a slice of
+// petSnapshotEntry values for inclusion in a node snapshot file.
+func exportSimPetSnapshot(fwd *SimForwarder) []petSnapshotEntry {
+	entries := fwd.pet.(*table.PrefixEgressTable).GetAllEntries()
+	result := make([]petSnapshotEntry, 0, len(entries))
+	for _, e := range entries {
+		se := petSnapshotEntry{
+			Prefix:    e.Name.TlvStr(),
+			Multicast: e.Multicast,
+		}
+		for _, egress := range e.EgressRouters {
+			se.Egress = append(se.Egress, egress.TlvStr())
+		}
+		for _, nh := range e.NextHops {
+			se.NextHops = append(se.NextHops, petSnapshotNextHop{FaceID: nh.FaceID, Cost: nh.Cost})
+		}
+		result = append(result, se)
+	}
+	return result
+}
+
+// importSimPetSnapshot restores PET entries from a snapshot.
+func importSimPetSnapshot(fwd *SimForwarder, entries []petSnapshotEntry) error {
+	pet := fwd.pet.(*table.PrefixEgressTable)
+	for _, se := range entries {
+		name, err := enc.NameFromTlvStr(se.Prefix)
+		if err != nil {
+			return fmt.Errorf("importSimPetSnapshot: bad prefix %q: %w", se.Prefix, err)
+		}
+		for _, egressStr := range se.Egress {
+			egress, err := enc.NameFromTlvStr(egressStr)
+			if err != nil {
+				return fmt.Errorf("importSimPetSnapshot: bad egress %q: %w", egressStr, err)
+			}
+			pet.AddEgressEnc(name, egress, se.Multicast)
+		}
+		for _, nh := range se.NextHops {
+			pet.AddNextHopEnc(name, nh.FaceID, nh.Cost)
+		}
+	}
+	return nil
+}
+
 // decodeEgressRouter copies the EgressRouter from an incoming LP header into
 // the packet, then strips it if it names this node so the forwarding pipeline
 // takes fwUnicastIngress (→ PET lookup → local delivery) rather than

@@ -21,6 +21,31 @@ type snapshotFile struct {
 	Nodes map[string]json.RawMessage `json:"nodes"`
 }
 
+// petSnapshotNextHop is a serializable next-hop entry within a PET snapshot.
+type petSnapshotNextHop struct {
+	FaceID uint64 `json:"face_id"`
+	Cost   uint64 `json:"cost"`
+}
+
+// petSnapshotEntry is a serializable PET entry used in the snapshot file.
+// EgressRouters and NextHops are TLV-encoded name strings (same encoding as
+// dv.RouterSnapshot uses for names).
+type petSnapshotEntry struct {
+	Prefix    string               `json:"prefix"`
+	Egress    []string             `json:"egress,omitempty"`
+	NextHops  []petSnapshotNextHop `json:"next_hops,omitempty"`
+	Multicast bool                 `json:"multicast,omitempty"`
+}
+
+// simNodeSnapshot is the combined per-node snapshot stored in snapshotFile.
+// It bundles the DV router state with the forwarder PET state so that a
+// stage-2 import restores a fully-converged forwarding table, not just the
+// DV routing state.
+type simNodeSnapshot struct {
+	DV  dv.RouterSnapshot  `json:"dv"`
+	Pet []petSnapshotEntry `json:"pet,omitempty"`
+}
+
 // NdndSimExportSnapshot exports the DV routing state of every node to a JSON
 // file at the given path.  Returns 0 on success, -1 on error.
 //
@@ -43,7 +68,9 @@ func NdndSimExportSnapshot(path *C.char) C.int {
 			return
 		}
 		snap := sdv.Router().ExportSnapshot()
-		b, err := json.Marshal(snap)
+		pet := exportSimPetSnapshot(node.Forwarder)
+		nsSnap := simNodeSnapshot{DV: snap, Pet: pet}
+		b, err := json.Marshal(nsSnap)
 		if err != nil {
 			exportErr = fmt.Errorf("node %d: %w", id, err)
 			return
@@ -114,13 +141,17 @@ func NdndSimImportSnapshot(path *C.char) C.int {
 			continue
 		}
 
-		var snap dv.RouterSnapshot
-		if err := json.Unmarshal(raw, &snap); err != nil {
+		var nsSnap simNodeSnapshot
+		if err := json.Unmarshal(raw, &nsSnap); err != nil {
 			importErr = fmt.Errorf("node %d: unmarshal snapshot: %w", id, err)
 			break
 		}
-		if err := sdv.ImportSnapshot(snap); err != nil {
+		if err := sdv.ImportSnapshot(nsSnap.DV); err != nil {
 			importErr = fmt.Errorf("node %d: import snapshot: %w", id, err)
+			break
+		}
+		if err := importSimPetSnapshot(node.Forwarder, nsSnap.Pet); err != nil {
+			importErr = fmt.Errorf("node %d: import PET snapshot: %w", id, err)
 			break
 		}
 	}
