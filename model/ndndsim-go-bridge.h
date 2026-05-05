@@ -200,6 +200,18 @@ extern "C"
      *  Returns 0 before the first heartbeat fires. */
     extern int64_t NdndSimGetLastAdvTimeNs(void);
 
+    /** Returns the ns-3 simulation time (nanoseconds) of the most recent
+     *  PrefixEventAddRemotePrefix event received by any node — i.e. the last
+     *  time any node successfully fetched and applied a remote prefix SVS
+     *  publication.  Returns 0 if no prefix data has been received yet.
+     *
+     *  Use this as the silence indicator for the twophase prefix-convergence
+     *  checker instead of watching the convergence metric value.  The metric
+     *  can stabilise while some nodes are still mid-fetch (the missing entries
+     *  are not yet counted), but this timestamp advances on every Data
+     *  delivery.  Silence here means no prefix Data is in-flight anywhere. */
+    extern int64_t NdndSimGetLastPfxActivityNs(void);
+
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
 

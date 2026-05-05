@@ -120,6 +120,15 @@ var (
 	// convergence is complete.
 	lastAdvTimeNs atomic.Int64
 
+	// lastPfxActivityNs is the ns-3 simulation time (nanoseconds) of the most
+	// recent PrefixEventAddRemotePrefix event received by any node.  C++ uses
+	// this to detect prefix-Data silence: once (now_ns - lastPfxActivityNs)
+	// exceeds SVS_periodic_timeout + epsilon, no prefix SVS Data is in-flight
+	// and prefix convergence is complete.  Returns 0 before the first event.
+	// Unlike lastAdvTimeNs (which fires periodically forever), this only
+	// advances when actual prefix Data packets are delivered.
+	lastPfxActivityNs atomic.Int64
+
 	// Routing convergence: tracks when each node has reachable routes
 	// to all other nodes. Purely event-driven via RouterReachableEvent.
 	routingConvMu        sync.Mutex
@@ -174,6 +183,7 @@ func NdndSimInit(
 	routingConvMu.Unlock()
 
 	prefixRemoteAddCount.Store(0)
+	lastPfxActivityNs.Store(0)
 
 	dv_table.SetPrefixEventObserver(func(ev dv_table.PrefixEvent) {
 		key := ev.Name.TlvStr()
@@ -200,6 +210,7 @@ func NdndSimInit(
 
 		if ev.Kind == dv_table.PrefixEventAddRemotePrefix {
 			prefixRemoteAddCount.Add(1)
+			lastPfxActivityNs.Store(ns)
 		}
 	})
 
@@ -484,6 +495,7 @@ func NdndSimDestroy() {
 	routingConvMu.Unlock()
 
 	prefixRemoteAddCount.Store(0)
+	lastPfxActivityNs.Store(0)
 
 	// Remove stale clock and consumer-flag entries left by DestroyAll.
 	// NdndSimDestroyNode removes them individually; NdndSimDestroy must
@@ -655,6 +667,16 @@ func NdndSimGetConvergenceMetric() C.int64_t {
 //export NdndSimGetLastAdvTimeNs
 func NdndSimGetLastAdvTimeNs() C.int64_t {
 	return C.int64_t(lastAdvTimeNs.Load())
+}
+
+// NdndSimGetLastPfxActivityNs returns the ns-3 simulation time (nanoseconds)
+// of the most recent PrefixEventAddRemotePrefix event received by any node.
+// C++ uses this to detect prefix-Data silence for convergence detection.
+// Returns 0 before the first prefix Data packet is delivered.
+//
+//export NdndSimGetLastPfxActivityNs
+func NdndSimGetLastPfxActivityNs() C.int64_t {
+	return C.int64_t(lastPfxActivityNs.Load())
 }
 
 //export NdndSimGetAppFaceId

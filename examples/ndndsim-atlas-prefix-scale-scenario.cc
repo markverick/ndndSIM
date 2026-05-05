@@ -214,37 +214,38 @@ main(int argc, char* argv[])
             //     the hard --simTime ceiling.
             if (stableWindow > 0)
             {
-            // Metric-quiescence checker: stop once the convergence metric has
-            // risen above baseline AND has not changed for silenceNs nanoseconds.
+            // Prefix-activity-silence checker: stop once the convergence metric
+            // has risen above baseline AND no prefix SVS publication has been
+            // received by any node for silenceNs nanoseconds.
             //
-            // The DV heartbeat fires periodically forever, so "no heartbeat" is
-            // never observed.  Instead we track the last sim time the metric
-            // changed.  Once it has been stable for adv_interval + epsilon, all
-            // in-flight prefix advertisements have been processed and PET/FIB is
-            // fully converged.
+            // We watch NdndSimGetLastPfxActivityNs() — the last sim time any
+            // node successfully fetched and applied a remote prefix Data packet
+            // — rather than the metric value itself.  The metric can stabilise
+            // while nodes are still mid-fetch (e.g. rf206 waiting for an SVS
+            // retry), but the activity timestamp advances on every Data delivery.
+            // True silence means no prefix Data is in-flight: all pending SVS
+            // fetches have completed or exhausted retries.
+            //
+            // stableWindow should be set to SVS_periodic_timeout + epsilon
+            // (typically pfx_sync_interval + a few hundred ms) so that at least
+            // one full SVS sync round can fire after the last Data arrival before
+            // we declare convergence.
             const int64_t silenceNs = static_cast<int64_t>(stableWindow * 1e9);
             auto baseCount = std::make_shared<int64_t>(-1); // -1 = not yet captured
-            auto lastCount = std::make_shared<int64_t>(-1);
-            auto lastChangeNs = std::make_shared<int64_t>(-1); // sim ns when metric last changed
             auto checkerPtr = std::make_shared<std::function<void()>>();
-            *checkerPtr = [checkerPtr, baseCount, lastCount, lastChangeNs, silenceNs, traceInterval]() {
+            *checkerPtr = [checkerPtr, baseCount, silenceNs, traceInterval]() {
                 int64_t raw = NdndSimGetConvergenceMetric();
                 if (*baseCount < 0)
                 {
                     *baseCount = raw;
-                    *lastCount = raw;
-                    *lastChangeNs = Simulator::Now().GetNanoSeconds();
                     Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
                     return;
                 }
                 int64_t nowNs = Simulator::Now().GetNanoSeconds();
-                if (raw != *lastCount)
-                {
-                    *lastCount = raw;
-                    *lastChangeNs = nowNs;
-                }
-                // Stop once metric has risen above baseline and been stable for silenceNs.
-                if (raw > *baseCount && (nowNs - *lastChangeNs) >= silenceNs)
+                int64_t lastPfxNs = NdndSimGetLastPfxActivityNs();
+                // Stop once metric has risen above baseline and prefix activity
+                // has been silent for silenceNs.
+                if (raw > *baseCount && lastPfxNs > 0 && (nowNs - lastPfxNs) >= silenceNs)
                 {
                     Simulator::Stop();
                     return;
