@@ -478,29 +478,6 @@ func (dv *Router) Cleanup() {
 // _pfxStarted tracks which Router instances have had pfxSvs.Start() called.
 var _pfxStarted sync.Map // *Router → struct{}
 
-// _snapGrace tracks Router instances that recently imported a snapshot.
-// While a Router is in grace mode, updatePrefixSubs will NOT remove
-// existing prefix subscriptions even if the router is temporarily unreachable
-// during DV re-convergence after snapshot import.
-var _snapGrace sync.Map // *Router → struct{}
-
-// _snapGraceActive reports whether dv is in snapshot-import grace mode.
-func _snapGraceActive(dv *Router) bool {
-	_, ok := _snapGrace.Load(dv)
-	return ok
-}
-
-// _snapGraceSet marks dv as being in grace mode.  The grace period lasts for
-// one RouterDeadInterval so that DV can re-converge before subscriptions are
-// pruned.
-func _snapGraceSet(dv *Router) {
-	_snapGrace.Store(dv, struct{}{})
-	interval := dv.config.RouterDeadInterval()
-	_ndndsim.AfterFunc(interval, func() {
-		_snapGrace.Delete(dv)
-	})
-}
-
 // _pfxCancel stores the cancel function for the pending pfxSvs startup timer.
 var _pfxCancel sync.Map // *Router → func()
 
@@ -628,11 +605,26 @@ type RouterSnapshotPfxNextHop struct {
 	Cost uint64 ` + "`" + `json:"cost"` + "`" + `
 }
 
+// RouterSnapshotNeighborEntry is one entry in an exported neighbor advertisement.
+type RouterSnapshotNeighborEntry struct {
+	Dest      string ` + "`" + `json:"dest"` + "`" + `
+	NextHop   string ` + "`" + `json:"next_hop"` + "`" + `
+	Cost      uint64 ` + "`" + `json:"cost"` + "`" + `
+	OtherCost uint64 ` + "`" + `json:"other_cost"` + "`" + `
+}
+
+// RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
+type RouterSnapshotNeighbor struct {
+	Name    string                        ` + "`" + `json:"name"` + "`" + `
+	Entries []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+}
+
 // RouterSnapshot is the full serialisable state of a Router instance.
 type RouterSnapshot struct {
-	Rib        []RouterSnapshotRibRow   ` + "`" + `json:"rib"` + "`" + `
-	Fib        []RouterSnapshotFibRow   ` + "`" + `json:"fib"` + "`" + `
-	PfxEntries []RouterSnapshotPfxEntry ` + "`" + `json:"pfx_entries"` + "`" + `
+	Rib        []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
+	Fib        []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
+	PfxEntries []RouterSnapshotPfxEntry  ` + "`" + `json:"pfx_entries"` + "`" + `
+	Neighbors  []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
 }
 
 // ExportSnapshot captures the current DV state into a RouterSnapshot.
@@ -642,6 +634,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 	ribRows := dv.rib.Snapshot()
 	fibRows := dv.fib.Snapshot()
 	pfxEntries := dv.pfx.SnapshotEntries()
+	neighbors := dv.neighbors.GetAll()
 	dv.mutex.Unlock()
 
 	snap := RouterSnapshot{}
@@ -670,6 +663,24 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 		}
 		snap.PfxEntries = append(snap.PfxEntries, entry)
 	}
+	for _, ns := range neighbors {
+		if ns.Advert == nil {
+			continue
+		}
+		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr()}
+		for _, e := range ns.Advert.Entries {
+			if e.Destination == nil || e.NextHop == nil {
+				continue
+			}
+			sn.Entries = append(sn.Entries, RouterSnapshotNeighborEntry{
+				Dest:      e.Destination.Name.TlvStr(),
+				NextHop:   e.NextHop.Name.TlvStr(),
+				Cost:      e.Cost,
+				OtherCost: e.OtherCost,
+			})
+		}
+		snap.Neighbors = append(snap.Neighbors, sn)
+	}
 	return snap
 }
 
@@ -677,7 +688,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 // Must be called after Init() and before the first heartbeat tick.
 func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	dv.mutex.Lock()
-	// Restore RIB.
+	// Restore RIB rows as fallback for neighbors without exported adverts.
 	for _, r := range snap.Rib {
 		dest, err := enc.NameFromTlvStr(r.Dest)
 		if err != nil {
@@ -729,11 +740,34 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	}
 	dv.mutex.Unlock()
 	dv.pfx.RestorePfxEntries(pfxEntries)
-	// Do NOT restore SVS state: stage 2 announces fresh prefixes, so the prefix
-	// SVS must start from seqNo=0 (same as a non-snapshot run).
 
-	// Activate grace period: suppress prefix unsubscription during DV re-convergence.
-	_snapGraceSet(dv)
+	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
+	for _, sn := range snap.Neighbors {
+		name, err := enc.NameFromTlvStr(sn.Name)
+		if err != nil {
+			continue
+		}
+		advert := &tlv.Advertisement{}
+		for _, e := range sn.Entries {
+			dest, err2 := enc.NameFromTlvStr(e.Dest)
+			if err2 != nil {
+				continue
+			}
+			nh, err2 := enc.NameFromTlvStr(e.NextHop)
+			if err2 != nil {
+				continue
+			}
+			advert.Entries = append(advert.Entries, &tlv.AdvEntry{
+				Destination: &tlv.Destination{Name: dest},
+				NextHop:     &tlv.Destination{Name: nh},
+				Cost:        e.Cost,
+				OtherCost:   e.OtherCost,
+			})
+		}
+		ns := &table.NeighborState{Name: name, Advert: advert}
+		dv.updateRib(ns)
+	}
+
 	return nil
 }
 `
@@ -1054,10 +1088,11 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippet)
 	// ndn_sync is not in the upstream router.go; needed for injected methods.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
-	// fmt, enc, and table are needed for ExportSnapshot/ImportSnapshot.
+	// fmt, enc, table and tlv are needed for ExportSnapshot/ImportSnapshot.
 	astutil.AddImport(fset, file, "fmt")
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
+	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
 	return true
 }
 
@@ -1301,29 +1336,6 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 // convergence hook invocation.
 var _pfxStarted sync.Map
 
-// _snapGrace tracks Router instances that recently imported a snapshot.
-// While a Router is in grace mode, updatePrefixSubs will NOT remove
-// existing prefix subscriptions even if the router is temporarily unreachable
-// during DV re-convergence after snapshot import.
-var _snapGrace sync.Map // *Router → struct{}
-
-// _snapGraceActive reports whether dv is in snapshot-import grace mode.
-func _snapGraceActive(dv *Router) bool {
-	_, ok := _snapGrace.Load(dv)
-	return ok
-}
-
-// _snapGraceSet marks dv as being in grace mode.  The grace period lasts for
-// one RouterDeadInterval so that DV can re-converge before subscriptions are
-// pruned.
-func _snapGraceSet(dv *Router) {
-	_snapGrace.Store(dv, struct{}{})
-	interval := dv.config.RouterDeadInterval()
-	_ndndsim.AfterFunc(interval, func() {
-		_snapGrace.Delete(dv)
-	})
-}
-
 // startPfxOnce starts the prefix SVS sync exactly once per Router instance.
 // In the onephase build Init() already calls pfxSvs.Start(); subsequent calls
 // from runConvergenceHook are deduplicated by _pfxStarted and are no-ops.
@@ -1349,10 +1361,25 @@ type RouterSnapshotFibRow struct {
 	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
 }
 
+// RouterSnapshotNeighborEntry is one entry in an exported neighbor advertisement.
+type RouterSnapshotNeighborEntry struct {
+	Dest      string ` + "`" + `json:"dest"` + "`" + `
+	NextHop   string ` + "`" + `json:"next_hop"` + "`" + `
+	Cost      uint64 ` + "`" + `json:"cost"` + "`" + `
+	OtherCost uint64 ` + "`" + `json:"other_cost"` + "`" + `
+}
+
+// RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
+type RouterSnapshotNeighbor struct {
+	Name    string                        ` + "`" + `json:"name"` + "`" + `
+	Entries []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+}
+
 // RouterSnapshot is the full serialisable state of a Router instance.
 type RouterSnapshot struct {
-	Rib []RouterSnapshotRibRow ` + "`" + `json:"rib"` + "`" + `
-	Fib []RouterSnapshotFibRow ` + "`" + `json:"fib"` + "`" + `
+	Rib       []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
+	Fib       []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
+	Neighbors []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
 }
 
 // ExportSnapshot captures the current DV state into a RouterSnapshot.
@@ -1363,6 +1390,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 	dv.mutex.Lock()
 	ribRows := dv.rib.Snapshot()
 	fibRows := dv.fib.Snapshot()
+	neighbors := dv.neighbors.GetAll()
 	dv.mutex.Unlock()
 
 	snap := RouterSnapshot{}
@@ -1380,6 +1408,24 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 			Cost:   f.Cost,
 		})
 	}
+	for _, ns := range neighbors {
+		if ns.Advert == nil {
+			continue
+		}
+		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr()}
+		for _, e := range ns.Advert.Entries {
+			if e.Destination == nil || e.NextHop == nil {
+				continue
+			}
+			sn.Entries = append(sn.Entries, RouterSnapshotNeighborEntry{
+				Dest:      e.Destination.Name.TlvStr(),
+				NextHop:   e.NextHop.Name.TlvStr(),
+				Cost:      e.Cost,
+				OtherCost: e.OtherCost,
+			})
+		}
+		snap.Neighbors = append(snap.Neighbors, sn)
+	}
 	return snap
 }
 
@@ -1387,6 +1433,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 // Must be called after Init() and before the first heartbeat tick.
 func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	dv.mutex.Lock()
+	// Restore RIB rows as fallback for neighbors without exported adverts.
 	for _, r := range snap.Rib {
 		dest, err := enc.NameFromTlvStr(r.Dest)
 		if err != nil {
@@ -1414,20 +1461,40 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	}
 	dv.mutex.Unlock()
 
-	// Do NOT restore SVS state: stage 2 announces fresh prefixes with a new
-	// boot time, so the prefix SVS must start from seqNo=0 (same as a
-	// non-snapshot run).  Importing the stage-1 SVS state is harmful because
-	// both stage 1 and stage 2 use bootTime=1 (sim time is 0 at start), so
-	// the imported Known=1 for boot=1 would overlap with stage-2 entries and
-	// cause seqNo=1 (the stage-2 Reset) to be silently skipped.
+	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
+	// This ensures that when the first real heartbeat arrives from each neighbor,
+	// DirtyResetNextHop + re-add produces the same result as stage-1: no routes
+	// are lost regardless of timing. Neighbors without exported adverts retain
+	// their routes from the rib rows restored above.
+	for _, sn := range snap.Neighbors {
+		name, err := enc.NameFromTlvStr(sn.Name)
+		if err != nil {
+			continue
+		}
+		advert := &tlv.Advertisement{}
+		for _, e := range sn.Entries {
+			dest, err2 := enc.NameFromTlvStr(e.Dest)
+			if err2 != nil {
+				continue
+			}
+			nh, err2 := enc.NameFromTlvStr(e.NextHop)
+			if err2 != nil {
+				continue
+			}
+			advert.Entries = append(advert.Entries, &tlv.AdvEntry{
+				Destination: &tlv.Destination{Name: dest},
+				NextHop:     &tlv.Destination{Name: nh},
+				Cost:        e.Cost,
+				OtherCost:   e.OtherCost,
+			})
+		}
+		// Use a temporary NeighborState (not added to the table) so that
+		// updateRib rebuilds the RIB for this neighbor via DV protocol logic.
+		ns := &table.NeighborState{Name: name, Advert: advert}
+		dv.updateRib(ns)
+	}
 
-	// updatePrefixSubs() is normally called from postUpdateRib(), but after
-	// a snapshot import the RIB is pre-populated without any RIB-change event,
-	// so subscriptions would never be established and remote prefixes would not
-	// propagate to this node's dv_prefix_table.
 	dv.updatePrefixSubs()
-	// Activate grace period: suppress prefix unsubscription during DV re-convergence.
-	_snapGraceSet(dv)
 	return nil
 }`
 
@@ -1459,5 +1526,6 @@ func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
 	astutil.AddImport(fset, file, "fmt")
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
+	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
 	return true
 }

@@ -107,7 +107,7 @@ pkg("dv/table", map[string][]fileRule{
 "prefix_table.go": {rulePrefixEventHooks},
 }),
 pkg("dv/dv", map[string][]fileRule{
-		"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceGuard, ruleSnapGraceFibGuard, ruleSnapGraceRibPruneGuard},
+		"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
 }),
 pkg("dv/nfdc", map[string][]fileRule{
@@ -147,7 +147,7 @@ pkg("dv/table", map[string][]fileRule{
 // dv/dv: inject Router and PrefixModule sim methods (eliminates router_sim.go
 // and prefix_sim.go overlays).
 pkg("dv/dv", map[string][]fileRule{
-		"table_algo.go": {rulePostUpdateRibConvergenceHook, ruleSnapGraceFibGuard, ruleSnapGraceRibPruneGuard},
+		"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
 "prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions, ruleSvsALOMaxPipelineSim},
 }),
@@ -234,15 +234,6 @@ modified = applyDeadNonceListMutex(file, fset) || modified
 
 		case rulePostUpdateRibConvergenceHook:
 			modified = applyPostUpdateRibConvergenceHook(file) || modified
-
-		case ruleSnapGraceGuard:
-			modified = applySnapGraceGuard(file) || modified
-
-		case ruleSnapGraceFibGuard:
-			modified = applySnapGraceFibGuard(file) || modified
-
-		case ruleSnapGraceRibPruneGuard:
-			modified = applySnapGraceRibPruneGuard(file) || modified
 
 		case rulePrefixEventHooks:
 			if applyPrefixEventHooks(file) {
