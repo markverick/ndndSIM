@@ -615,8 +615,10 @@ type RouterSnapshotNeighborEntry struct {
 
 // RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
 type RouterSnapshotNeighbor struct {
-	Name    string                        ` + "`" + `json:"name"` + "`" + `
-	Entries []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+	Name       string                        ` + "`" + `json:"name"` + "`" + `
+	Entries    []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+	AdvertBoot uint64                        ` + "`" + `json:"advert_boot,omitempty"` + "`" + `
+	AdvertSeq  uint64                        ` + "`" + `json:"advert_seq,omitempty"` + "`" + `
 }
 
 // RouterSnapshot is the full serialisable state of a Router instance.
@@ -625,6 +627,7 @@ type RouterSnapshot struct {
 	Fib        []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
 	PfxEntries []RouterSnapshotPfxEntry  ` + "`" + `json:"pfx_entries"` + "`" + `
 	Neighbors  []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
+	PfxSvsState []byte                   ` + "`" + `json:"pfx_svs_state,omitempty"` + "`" + `
 }
 
 // ExportSnapshot captures the current DV state into a RouterSnapshot.
@@ -667,7 +670,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 		if ns.Advert == nil {
 			continue
 		}
-		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr()}
+		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr(), AdvertBoot: ns.AdvertBoot, AdvertSeq: ns.AdvertSeq}
 		for _, e := range ns.Advert.Entries {
 			if e.Destination == nil || e.NextHop == nil {
 				continue
@@ -680,6 +683,9 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 			})
 		}
 		snap.Neighbors = append(snap.Neighbors, sn)
+	}
+	if wire := dv.pfx.pfxSvs.ExportInstanceState(); len(wire) > 0 {
+		snap.PfxSvsState = wire.Join()
 	}
 	return snap
 }
@@ -740,6 +746,11 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	}
 	dv.mutex.Unlock()
 	dv.pfx.RestorePfxEntries(pfxEntries)
+	if len(snap.PfxSvsState) > 0 {
+		if err := dv.pfx.pfxSvs.ImportInstanceState(enc.Wire{snap.PfxSvsState}); err != nil {
+			log.Warn(dv, "ImportSnapshot: pfxSvs state restore failed", "err", err)
+		}
+	}
 
 	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
 	for _, sn := range snap.Neighbors {
@@ -764,8 +775,13 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 				OtherCost:   e.OtherCost,
 			})
 		}
-		ns := &table.NeighborState{Name: name, Advert: advert}
-		dv.updateRib(ns)
+		dv.mutex.Lock()
+		realNs := dv.neighbors.Add(name)
+		realNs.Advert = advert
+		realNs.AdvertBoot = sn.AdvertBoot
+		realNs.AdvertSeq = sn.AdvertSeq
+		dv.mutex.Unlock()
+		dv.updateRib(realNs)
 	}
 
 	return nil
@@ -1093,6 +1109,8 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
 	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
+	// log is needed for ImportSnapshot warning.
+	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
 	return true
 }
 
@@ -1371,21 +1389,30 @@ type RouterSnapshotNeighborEntry struct {
 
 // RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
 type RouterSnapshotNeighbor struct {
-	Name    string                        ` + "`" + `json:"name"` + "`" + `
-	Entries []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+	Name       string                        ` + "`" + `json:"name"` + "`" + `
+	Entries    []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
+	AdvertBoot uint64                        ` + "`" + `json:"advert_boot,omitempty"` + "`" + `
+	AdvertSeq  uint64                        ` + "`" + `json:"advert_seq,omitempty"` + "`" + `
+}
+
+// RouterSnapshotPfxEntry is a JSON-serialisable remote prefix entry.
+type RouterSnapshotPfxEntry struct {
+	Router string ` + "`" + `json:"router"` + "`" + `
+	Name   string ` + "`" + `json:"name"` + "`" + `
+	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
 }
 
 // RouterSnapshot is the full serialisable state of a Router instance.
 type RouterSnapshot struct {
-	Rib       []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
-	Fib       []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
-	Neighbors []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
+	Rib         []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
+	Fib         []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
+	Neighbors   []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
+	PfxSvsState []byte                    ` + "`" + `json:"pfx_svs_state,omitempty"` + "`" + `
+	PfxTable    []RouterSnapshotPfxEntry  ` + "`" + `json:"pfx_table,omitempty"` + "`" + `
 }
 
 // ExportSnapshot captures the current DV state into a RouterSnapshot.
 // Must be called after DV and prefix-SVS have converged.
-// Onephase: prefix table entries are not included (router names are not tracked);
-// the SVS state vector alone is sufficient for Stage N+1 to skip re-syncing.
 func (dv *Router) ExportSnapshot() RouterSnapshot {
 	dv.mutex.Lock()
 	ribRows := dv.rib.Snapshot()
@@ -1412,7 +1439,7 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 		if ns.Advert == nil {
 			continue
 		}
-		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr()}
+		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr(), AdvertBoot: ns.AdvertBoot, AdvertSeq: ns.AdvertSeq}
 		for _, e := range ns.Advert.Entries {
 			if e.Destination == nil || e.NextHop == nil {
 				continue
@@ -1426,6 +1453,35 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 		}
 		snap.Neighbors = append(snap.Neighbors, sn)
 	}
+
+	// Export pfxSvs Known seqNos so Stage N+1 skips re-fetching already-seen data.
+	if wire := dv.pfxSvs.ExportInstanceState(); len(wire) > 0 {
+		snap.PfxSvsState = wire.Join()
+	}
+
+	// Export the prefix table for all remote routers visible in the RIB so
+	// Stage N+1 has an immediately-populated table without waiting for SVS sync.
+	selfName := dv.config.RouterName().TlvStr()
+	seen := make(map[string]bool)
+	for _, r := range snap.Rib {
+		if seen[r.Dest] || r.Dest == selfName {
+			continue
+		}
+		seen[r.Dest] = true
+		routerName, err := enc.NameFromTlvStr(r.Dest)
+		if err != nil {
+			continue
+		}
+		router := dv.pfx.GetRouter(routerName)
+		for _, entry := range router.Prefixes {
+			snap.PfxTable = append(snap.PfxTable, RouterSnapshotPfxEntry{
+				Router: r.Dest,
+				Name:   entry.Name.TlvStr(),
+				Cost:   entry.Cost,
+			})
+		}
+	}
+
 	return snap
 }
 
@@ -1459,7 +1515,34 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 		}
 		dv.fib.Update(name, entries)
 	}
+
+	// Restore remote prefix table entries directly so Stage N+1 has a
+	// fully-populated prefix table without waiting for SVS re-sync.
+	for _, pe := range snap.PfxTable {
+		routerName, err := enc.NameFromTlvStr(pe.Router)
+		if err != nil {
+			continue
+		}
+		prefixName, err := enc.NameFromTlvStr(pe.Name)
+		if err != nil {
+			continue
+		}
+		router := dv.pfx.GetRouter(routerName)
+		router.Prefixes[prefixName.TlvStr()] = &table.PrefixEntry{
+			Name: prefixName,
+			Cost: pe.Cost,
+		}
+	}
+
 	dv.mutex.Unlock()
+
+	// Restore pfxSvs Known state before SubscribePublisher triggers consumeCheck,
+	// so that it sees Pending == Known == Latest and skips re-fetching stage-1 data.
+	if len(snap.PfxSvsState) > 0 {
+		if err := dv.pfxSvs.ImportInstanceState(enc.Wire{snap.PfxSvsState}); err != nil {
+			log.Warn(dv, "ImportSnapshot: pfxSvs state restore failed", "err", err)
+		}
+	}
 
 	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
 	// This ensures that when the first real heartbeat arrives from each neighbor,
@@ -1488,10 +1571,13 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 				OtherCost:   e.OtherCost,
 			})
 		}
-		// Use a temporary NeighborState (not added to the table) so that
-		// updateRib rebuilds the RIB for this neighbor via DV protocol logic.
-		ns := &table.NeighborState{Name: name, Advert: advert}
-		dv.updateRib(ns)
+		dv.mutex.Lock()
+		realNs := dv.neighbors.Add(name)
+		realNs.Advert = advert
+		realNs.AdvertBoot = sn.AdvertBoot
+		realNs.AdvertSeq = sn.AdvertSeq
+		dv.mutex.Unlock()
+		dv.updateRib(realNs)
 	}
 
 	dv.updatePrefixSubs()
@@ -1522,10 +1608,11 @@ func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippetOp)
 	// ndn_sync already imported at 51774b8; addNamedImport is idempotent.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
-	// fmt, enc, and table needed for ExportSnapshot/ImportSnapshot.
+	// fmt, enc, table, tlv, and log needed for ExportSnapshot/ImportSnapshot.
 	astutil.AddImport(fset, file, "fmt")
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
 	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
+	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
 	return true
 }
