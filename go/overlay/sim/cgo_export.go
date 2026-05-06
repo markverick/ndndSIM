@@ -658,6 +658,53 @@ func NdndSimGetConvergenceMetric() C.int64_t {
 	return C.int64_t(fibTotal)
 }
 
+// NdndSimGetConvergenceMetricMin returns the minimum per-node value of the
+// same metric used by NdndSimGetConvergenceMetric (forwarder_pet for twophase,
+// forwarder_fib for onephase).  The stage-1 snapshot checker uses this instead
+// of the global sum so that the snapshot is not exported until the slowest
+// node — the one with the highest-degree core neighbor — has also finished
+// populating its table.  Returns 0 before any node has reported metrics.
+//
+//export NdndSimGetConvergenceMetricMin
+func NdndSimGetConvergenceMetricMin() C.int64_t {
+	if globalRuntime == nil {
+		return 0
+	}
+	var fibMin, petMin int64 = -1, -1
+	hasPET := false
+	globalRuntime.IterNodes(func(_ uint32, node *Node) {
+		metrics := node.Forwarder.SimTableMetrics()
+		if dv := node.DvRouter(); dv != nil {
+			metrics = append(metrics, dv.Router().SimTableMetrics()...)
+		}
+		for _, m := range metrics {
+			switch m.Table {
+			case "forwarder_fib":
+				v := int64(m.EntryCount)
+				if fibMin < 0 || v < fibMin {
+					fibMin = v
+				}
+			case "forwarder_pet":
+				v := int64(m.EntryCount)
+				if petMin < 0 || v < petMin {
+					petMin = v
+				}
+				hasPET = true
+			}
+		}
+	})
+	if hasPET {
+		if petMin < 0 {
+			return 0
+		}
+		return C.int64_t(petMin)
+	}
+	if fibMin < 0 {
+		return 0
+	}
+	return C.int64_t(fibMin)
+}
+
 // NdndSimGetLastAdvTimeNs returns the ns-3 simulation time (nanoseconds) when
 // any DV node last fired a heartbeat advertisement.  C++ uses this to detect
 // advertisement silence: once (now_ns - NdndSimGetLastAdvTimeNs()) exceeds

@@ -192,6 +192,13 @@ extern "C"
      *  stableWindow seconds, prefix convergence is complete. */
     extern int64_t NdndSimGetConvergenceMetric(void);
 
+    /** Returns the minimum per-node value of the same metric used by
+     *  NdndSimGetConvergenceMetric (forwarder_pet for twophase, forwarder_fib
+     *  for onephase).  The stage-1 snapshot checker uses this so that the
+     *  snapshot is not exported until the slowest node has also finished
+     *  populating its table.  Returns 0 before any node has reported. */
+    extern int64_t NdndSimGetConvergenceMetricMin(void);
+
     /** Returns the ns-3 simulation time (nanoseconds) of the most recent DV
      *  heartbeat advertisement fired by any node.  C++ uses this to detect
      *  advertisement silence: if (Simulator::Now().GetNanoSeconds() -
