@@ -44,7 +44,6 @@ static bool g_bridgeActive = false;
  */
 static std::unordered_map<uint32_t, std::function<void(uint32_t)>> g_dataProducedCallbacks;
 static std::unordered_map<uint32_t, std::vector<std::function<void(uint32_t, const std::string&)>>> g_dataReceivedCallbacks;
-static std::function<void()> g_routingConvergedCallback;
 
 /**
  * Callback: NDNd wants to send a packet on an ns-3 NetDevice.
@@ -237,31 +236,6 @@ OnDataReceived(uint32_t nodeId, uint32_t dataSize, const char* dataName, uint32_
     }
 }
 
-/**
- * Callback: DV routing has converged (all nodes have routes to all others).
- */
-static void
-OnRoutingConverged()
-{
-    NS_LOG_FUNCTION_NOARGS();
-    std::function<void()> cb;
-    {
-        std::lock_guard<std::mutex> lock(g_bridgeMutex);
-        if (!g_bridgeActive)
-        {
-            return;
-        }
-        cb = g_routingConvergedCallback;
-    }
-    if (cb)
-    {
-        // Use ScheduleWithContext (thread-safe) instead of ScheduleNow which
-        // requires the caller to be on the ns-3 main thread.  The routing
-        // convergence observer fires from a Go goroutine, so ScheduleNow
-        // would trigger an NS_ASSERT abort.
-        Simulator::ScheduleWithContext(Simulator::NO_CONTEXT, Time(0), [cb = std::move(cb)]() { cb(); });
-    }
-}
 
 /*
  * Initialize the Go bridge with ns-3 callbacks.
@@ -275,7 +249,7 @@ InitGoBridge()
         g_bridgeActive = true;
     }
     NdndSimInit(&OnSendPacket, &OnScheduleEvent, &OnCancelEvent, &OnGetTimeNs,
-                &OnDataProduced, &OnDataReceived, &OnRoutingConverged);
+                &OnDataProduced, &OnDataReceived);
 }
 
 /*
@@ -296,7 +270,6 @@ DestroyGoBridge()
         g_canceledEvents.clear();
         g_dataProducedCallbacks.clear();
         g_dataReceivedCallbacks.clear();
-        g_routingConvergedCallback = nullptr;
     }
 }
 
@@ -313,16 +286,6 @@ RegisterDataReceivedCallback(uint32_t nodeId,
 {
     std::lock_guard<std::mutex> lock(g_bridgeMutex);
     g_dataReceivedCallbacks[nodeId].push_back(std::move(cb));
-}
-
-void
-RegisterRoutingConvergedCallback(std::function<void()> cb)
-{
-    std::lock_guard<std::mutex> lock(g_bridgeMutex);
-    NS_ASSERT_MSG(!g_routingConvergedCallback,
-                  "RegisterRoutingConvergedCallback: callback already registered; "
-                  "second registration would silently replace the first");
-    g_routingConvergedCallback = std::move(cb);
 }
 
 } // namespace ndndsim

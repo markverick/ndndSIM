@@ -104,45 +104,23 @@ var (
 	consumerMu    sync.Mutex
 	consumerFlags map[uint32][]*int32
 
-	dvSpanMu sync.Mutex
-	dvSpanByPrefix    map[string]*dvSpanMetric
-
 	// Prefix propagation: total count of PrefixEventAddRemotePrefix events
 	// received since simulation start. Used by C++ to detect when prefix
 	// propagation has stabilised (count stops growing).
 	prefixRemoteAddCount atomic.Int64
 
-	// lastAdvTimeNs is the ns-3 simulation time (nanoseconds) of the most
-	// recent DV advertisement heartbeat fired by any node.  Stamped by
-	// scheduleHeartbeat in dv.go immediately after RunHeartbeat().  C++ uses
-	// this to detect advertisement silence: if (now - lastAdvTimeNs) >
-	// adv_interval + epsilon, no advertisements are in-flight and prefix
-	// convergence is complete.
-	lastAdvTimeNs atomic.Int64
+	// lastDvAdvReceiptNs is the ns-3 simulation time (nanoseconds) of the most
+	// recent DV advertisement received from a neighbor at any node.  Tracks
+	// when advertisements pass through transit nodes (in-flight).  Returns -1
+	// before the first receipt.
+	lastDvAdvReceiptNs atomic.Int64
 
-	// lastPfxActivityNs is the ns-3 simulation time (nanoseconds) of the most
-	// recent PrefixEventAddRemotePrefix event received by any node.  C++ uses
-	// this to detect prefix-Data silence: once (now_ns - lastPfxActivityNs)
-	// exceeds SVS_periodic_timeout + epsilon, no prefix SVS Data is in-flight
-	// and prefix convergence is complete.  Returns 0 before the first event.
-	// Unlike lastAdvTimeNs (which fires periodically forever), this only
-	// advances when actual prefix Data packets are delivered.
-	lastPfxActivityNs atomic.Int64
-
-	// Routing convergence: tracks when each node has reachable routes
-	// to all other nodes. Purely event-driven via RouterReachableEvent.
-	routingConvMu        sync.Mutex
-	routingConvReachable map[string]map[string]bool // nodeRouter -> set of reachableRouters
-	routingConvTimeNs    int64                      // sim timestamp when convergence completed (0 = not yet)
-	routingConvStartNs   int64                      // sim timestamp of first RouterReachable event
-	routingConvTotal     int                        // expected total DV nodes (0 = unknown)
-	routingConvFired     bool                       // true after callback has been fired
+	// lastPfxSvsDeliveryNs is the ns-3 simulation time (nanoseconds) of the most
+	// recent prefix SVS publication delivery to any node's subscription callback.
+	// This fires as prefix Data passes through each transit node (in-flight), not
+	// when it is added to a routing table. Returns -1 before the first delivery.
+	lastPfxSvsDeliveryNs atomic.Int64
 )
-
-type dvSpanMetric struct {
-	firstOriginNs int64
-	lastReceiveNs int64
-}
 
 // --- Exported CGo functions called by ns-3 C++ code ---
 
@@ -154,7 +132,6 @@ func NdndSimInit(
 	getTimeNsCb C.NdndSimGetTimeNsFunc,
 	dataProducedCb C.NdndSimDataProducedFunc,
 	dataReceivedCb C.NdndSimDataReceivedFunc,
-	routingConvergedCb C.NdndSimRoutingConvergedFunc,
 ) {
 	C.setSendPacketCb(sendPacketCb)
 	C.setScheduleEventCb(scheduleEventCb)
@@ -162,11 +139,6 @@ func NdndSimInit(
 	C.setGetTimeNsCb(getTimeNsCb)
 	C.setDataProducedCb(dataProducedCb)
 	C.setDataReceivedCb(dataReceivedCb)
-	C.setRoutingConvergedCb(routingConvergedCb)
-
-	dvSpanMu.Lock()
-	dvSpanByPrefix = make(map[string]*dvSpanMetric)
-	dvSpanMu.Unlock()
 
 	globalRuntime = NewRuntime()
 
@@ -174,98 +146,21 @@ func NdndSimInit(
 	consumerFlags = make(map[uint32][]*int32)
 	consumerMu.Unlock()
 
-	routingConvMu.Lock()
-	routingConvReachable = make(map[string]map[string]bool)
-	routingConvTimeNs = 0
-	routingConvStartNs = 0
-	routingConvTotal = 0
-	routingConvFired = false
-	routingConvMu.Unlock()
-
 	prefixRemoteAddCount.Store(0)
-	lastPfxActivityNs.Store(0)
+	lastPfxSvsDeliveryNs.Store(-1)
+	lastDvAdvReceiptNs.Store(-1)
 
-	dv_table.SetPrefixEventObserver(func(ev dv_table.PrefixEvent) {
-		key := ev.Name.TlvStr()
-		ns := ev.At.UnixNano()
-
-		dvSpanMu.Lock()
-		m := dvSpanByPrefix[key]
-		if m == nil {
-			m = &dvSpanMetric{}
-			dvSpanByPrefix[key] = m
-		}
-
-		switch ev.Kind {
-		case dv_table.PrefixEventGlobalAnnounce:
-			if m.firstOriginNs == 0 || ns < m.firstOriginNs {
-				m.firstOriginNs = ns
-			}
-		case dv_table.PrefixEventAddRemotePrefix:
-			if ns > m.lastReceiveNs {
-				m.lastReceiveNs = ns
-			}
-		}
-		dvSpanMu.Unlock()
-
-		if ev.Kind == dv_table.PrefixEventAddRemotePrefix {
-			prefixRemoteAddCount.Add(1)
-			lastPfxActivityNs.Store(ns)
-		}
+	_ndndsim.SetPfxSvsDeliveryCallback(func() {
+		lastPfxSvsDeliveryNs.Store(_ndndsim.Now().UnixNano())
 	})
 
-	dv_table.SetRouterReachableObserver(func(ev dv_table.RouterReachableEvent) {
-		nodeKey := ev.NodeRouter.String()
-		reachKey := ev.ReachableRouter.String()
-		ns := ev.At.UnixNano()
+	_ndndsim.SetDvAdvReceiptCallback(func() {
+		lastDvAdvReceiptNs.Store(_ndndsim.Now().UnixNano())
+	})
 
-		// shouldFire is set under routingConvMu and acted on after the lock is
-		// released.  This avoids the lock-ordering hazard where callRoutingConverged
-		// (→ OnRoutingConverged → g_bridgeMutex) is called while routingConvMu is
-		// held, which would establish an implicit routingConvMu → g_bridgeMutex
-		// ordering that could deadlock if the bridge ever needs the reverse order.
-		shouldFire := false
-
-		routingConvMu.Lock()
-
-		if routingConvStartNs == 0 || ns < routingConvStartNs {
-			routingConvStartNs = ns
-		}
-
-		s := routingConvReachable[nodeKey]
-		if s == nil {
-			s = make(map[string]bool)
-			routingConvReachable[nodeKey] = s
-		}
-		s[reachKey] = true
-
-		// Record the sim time of the last event that could complete convergence.
-		if ns > routingConvTimeNs {
-			routingConvTimeNs = ns
-		}
-
-		// Check if convergence is now complete and fire callback once.
-		if routingConvTotal > 0 && !routingConvFired {
-			n := routingConvTotal
-			if len(routingConvReachable) >= n {
-				allDone := true
-				for _, rs := range routingConvReachable {
-					if len(rs) < n-1 {
-						allDone = false
-						break
-					}
-				}
-				if allDone {
-					routingConvFired = true
-					shouldFire = true
-				}
-			}
-		}
-
-		routingConvMu.Unlock()
-
-		if shouldFire {
-			C.callRoutingConverged()
+	dv_table.SetPrefixEventObserver(func(ev dv_table.PrefixEvent) {
+		if ev.Kind == dv_table.PrefixEventAddRemotePrefix {
+			prefixRemoteAddCount.Add(1)
 		}
 	})
 }
@@ -480,22 +375,10 @@ func NdndSimStopDv(nodeId C.uint32_t) {
 //export NdndSimDestroy
 func NdndSimDestroy() {
 	dv_table.SetPrefixEventObserver(nil)
-	dv_table.SetRouterReachableObserver(nil)
-
-	dvSpanMu.Lock()
-	dvSpanByPrefix = make(map[string]*dvSpanMetric)
-	dvSpanMu.Unlock()
-
-	routingConvMu.Lock()
-	routingConvReachable = make(map[string]map[string]bool)
-	routingConvTimeNs = 0
-	routingConvStartNs = 0
-	routingConvFired = false
-	routingConvTotal = 0
-	routingConvMu.Unlock()
 
 	prefixRemoteAddCount.Store(0)
-	lastPfxActivityNs.Store(0)
+	lastPfxSvsDeliveryNs.Store(-1)
+	lastDvAdvReceiptNs.Store(-1)
 
 	// Remove stale clock and consumer-flag entries left by DestroyAll.
 	// NdndSimDestroyNode removes them individually; NdndSimDestroy must
@@ -526,78 +409,10 @@ func NdndSimDestroy() {
 	}
 }
 
-//export NdndSimGetDvUpdateSpanNs
-func NdndSimGetDvUpdateSpanNs(prefixStr *C.char, prefixLen C.int) C.int64_t {
-	if globalRuntime == nil || prefixStr == nil || int(prefixLen) == 0 {
-		return C.int64_t(-1)
-	}
-
-	prefix := C.GoStringN(prefixStr, prefixLen)
-	name, err := parseNameFromString(prefix)
-	if err != nil {
-		return C.int64_t(-1)
-	}
-	key := name.TlvStr()
-
-	dvSpanMu.Lock()
-	m := dvSpanByPrefix[key]
-	dvSpanMu.Unlock()
-	if m == nil || m.firstOriginNs == 0 || m.lastReceiveNs == 0 || m.lastReceiveNs < m.firstOriginNs {
-		return C.int64_t(-1)
-	}
-
-	return C.int64_t(m.lastReceiveNs - m.firstOriginNs)
-}
-
 //export NdndSimSetTotalNodes
 func NdndSimSetTotalNodes(totalNodes C.int) {
-	routingConvMu.Lock()
-	defer routingConvMu.Unlock()
-	routingConvTotal = int(totalNodes)
-}
-
-//export NdndSimGetRoutingConvergenceNs
-func NdndSimGetRoutingConvergenceNs(totalNodes C.int) C.int64_t {
-	routingConvMu.Lock()
-	defer routingConvMu.Unlock()
-
-	if routingConvStartNs == 0 || int(totalNodes) < 2 {
-		return C.int64_t(-1)
-	}
-
-	n := int(totalNodes)
-
-	// Check that every node has reachable routes to all other n-1 nodes.
-	if len(routingConvReachable) < n {
-		return C.int64_t(-1)
-	}
-	for _, reachSet := range routingConvReachable {
-		if len(reachSet) < n-1 {
-			return C.int64_t(-1)
-		}
-	}
-
-	// Walk all events to find the actual completion timestamp:
-	// the earliest sim time at which ALL nodes had ALL n-1 routes.
-	// Since we only record the global max event time during collection,
-	// we need a more precise calculation.
-	//
-	// For each node, find its (n-1)th reachable event (the timestamp at
-	// which it completed). Convergence = max of per-node completion times
-	// minus the first event across all nodes.
-	//
-	// We don't have per-event timestamps stored granularly -- we stored
-	// routingConvTimeNs as the max. This IS the timestamp of the last
-	// event globally, which by definition is >= every per-node completion
-	// time. But it might overcount if the last event was redundant.
-	//
-	// However, the observer only fires on first-time reachability (the
-	// "Router is now reachable" condition is guarded by pfxSubs existence
-	// check), so every event is unique and meaningful. The last event IS
-	// the one that completed some node's set, making it the convergence
-	// moment.
-
-	return C.int64_t(routingConvTimeNs - routingConvStartNs)
+	// DV routing convergence now uses in-flight advertisement detection via
+	// NdndSimGetLastDvAdvReceiptNs; this function is a no-op.
 }
 
 // NdndSimGetPrefixRemoteAddCount returns the total number of
@@ -705,25 +520,29 @@ func NdndSimGetConvergenceMetricMin() C.int64_t {
 	return C.int64_t(fibMin)
 }
 
-// NdndSimGetLastAdvTimeNs returns the ns-3 simulation time (nanoseconds) when
-// any DV node last fired a heartbeat advertisement.  C++ uses this to detect
-// advertisement silence: once (now_ns - NdndSimGetLastAdvTimeNs()) exceeds
-// adv_interval + epsilon, no DV advertisements are in-flight and prefix
-// convergence can be declared complete.  Returns 0 before the first heartbeat.
+// NdndSimGetLastPfxSvsDeliveryNs returns the ns-3 simulation time (nanoseconds)
+// of the most recent prefix SVS publication delivery to any node's subscription
+// callback.  This fires as prefix Data passes through each transit node
+// (in-flight), not when it arrives at the destination.  Returns -1 before the
+// first delivery.  C++ uses this to detect prefix-Data silence: once
+// (now_ns - lastPfxSvsDeliveryNs) exceeds the sync period + epsilon, no prefix
+// SVS Data is in-flight and prefix convergence is complete.
 //
-//export NdndSimGetLastAdvTimeNs
-func NdndSimGetLastAdvTimeNs() C.int64_t {
-	return C.int64_t(lastAdvTimeNs.Load())
+//export NdndSimGetLastPfxSvsDeliveryNs
+func NdndSimGetLastPfxSvsDeliveryNs() C.int64_t {
+	return C.int64_t(lastPfxSvsDeliveryNs.Load())
 }
 
-// NdndSimGetLastPfxActivityNs returns the ns-3 simulation time (nanoseconds)
-// of the most recent PrefixEventAddRemotePrefix event received by any node.
-// C++ uses this to detect prefix-Data silence for convergence detection.
-// Returns 0 before the first prefix Data packet is delivered.
+// NdndSimGetLastDvAdvReceiptNs returns the ns-3 simulation time (nanoseconds)
+// of the most recent DV advertisement received from a neighbor at any node.
+// Returns -1 before the first receipt.  C++ uses this to detect DV
+// advertisement silence: once (now_ns - lastDvAdvReceiptNs) exceeds the
+// heartbeat interval + epsilon, no DV advertisements are in-flight and
+// DV routing convergence is complete.
 //
-//export NdndSimGetLastPfxActivityNs
-func NdndSimGetLastPfxActivityNs() C.int64_t {
-	return C.int64_t(lastPfxActivityNs.Load())
+//export NdndSimGetLastDvAdvReceiptNs
+func NdndSimGetLastDvAdvReceiptNs() C.int64_t {
+	return C.int64_t(lastDvAdvReceiptNs.Load())
 }
 
 //export NdndSimGetAppFaceId

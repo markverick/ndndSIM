@@ -148,13 +148,14 @@ main(int argc, char* argv[])
     Simulator::Run();
 
     // Write convergence metrics to file (if requested)
+    // Uses in-flight detection: NdndSimGetLastDvAdvReceiptNs tracks when DV
+    // advertisements pass through any node, and NdndSimGetLastPfxSvsDeliveryNs
+    // tracks when prefix SVS publications pass through any node.
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
-        auto pfx = prefix;
-        int64_t prefixSpanNs = NdndSimGetDvUpdateSpanNs(const_cast<char*>(pfx.c_str()),
-                                                        static_cast<int>(pfx.size()));
-        int64_t routingConvNs = NdndSimGetRoutingConvergenceNs(static_cast<int>(nodes.GetN()));
+        int64_t prefixSpanNs = NdndSimGetLastPfxSvsDeliveryNs();
+        int64_t routingConvNs = NdndSimGetLastDvAdvReceiptNs();
 
         ofs << "prefix_propagation_s=";
         if (prefixSpanNs >= 0)

@@ -75,26 +75,38 @@ main(int argc, char* argv[])
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
 
     // Announce synthetic prefixes on each node after DV convergence.
+    // Uses in-flight DV advertisement silence detection via polling.
     if (numPrefixes > 0)
     {
         NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
-        RegisterRoutingConvergedCallback([nodes, numPrefixes]() {
-            for (uint32_t i = 0; i < nodes.GetN(); ++i)
+        const int64_t silenceNs = static_cast<int64_t>(2.0 * 1e9); // 2s silence
+        const int64_t startNs = Simulator::Now().GetNanoSeconds();
+        auto checkerPtr = std::make_shared<std::function<void()>>();
+        *checkerPtr = [checkerPtr, silenceNs, startNs, traceInterval, nodes, numPrefixes]() {
+            int64_t nowNs = Simulator::Now().GetNanoSeconds();
+            int64_t lastAdvNs = NdndSimGetLastDvAdvReceiptNs();
+            int64_t refNs = (lastAdvNs >= 0) ? lastAdvNs : startNs;
+            if ((nowNs - refNs) >= silenceNs)
             {
-                auto stack = nodes.Get(i)->GetObject<NdndStack>();
-                for (int j = 0; j < numPrefixes; ++j)
+                // DV converged: announce prefixes
+                for (uint32_t i = 0; i < nodes.GetN(); ++i)
                 {
-                    std::string pfx =
-                        "/data/node" + std::to_string(i) + "/pfx" + std::to_string(j);
-                    stack->AnnouncePrefixToDv(pfx);
+                    auto stack = nodes.Get(i)->GetObject<NdndStack>();
+                    for (int j = 0; j < numPrefixes; ++j)
+                    {
+                        std::string pfx =
+                            "/data/node" + std::to_string(i) + "/pfx" + std::to_string(j);
+                        stack->AnnouncePrefixToDv(pfx);
+                    }
                 }
+                return;
             }
-        });
+            Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+        };
+        Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
     }
 
     // No consumer or producer — pure routing traffic measurement.
-    // Convergence is tracked event-driven via RouterReachableEvent
-    // in the Go DV code (no probe prefix needed).
 
     // ─── Link Traffic Tracer ───────────────────────────────────────
 
@@ -125,14 +137,13 @@ main(int argc, char* argv[])
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
-    // Write convergence time: event-driven measurement from Go.
-    // Returns the span from the first RouterReachable event to the
-    // event that makes all N nodes have routes to all N-1 others.
+    // Write convergence time: in-flight DV advertisement silence detection.
+    // Uses NdndSimGetLastDvAdvReceiptNs which tracks when DV advertisements
+    // pass through any node (in-flight), not at-rest.
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
-        int64_t convNs = NdndSimGetRoutingConvergenceNs(
-            static_cast<int>(nodes.GetN()));
+        int64_t convNs = NdndSimGetLastDvAdvReceiptNs();
         if (convNs >= 0)
         {
             ofs << (static_cast<double>(convNs) / 1e9) << std::endl;

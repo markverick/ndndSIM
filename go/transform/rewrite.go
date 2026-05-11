@@ -60,6 +60,8 @@ ruleInjectNfdcSimExtensions           // dv/nfdc/nfdc.go  (needs _ndndsim import
 ruleInjectPrefixSimExtensions         // dv/dv/prefix.go
 ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
 ruleSvsALOMaxPipelineSim              // dv/dv/prefix.go (twophase) + dv/dv/router.go (onephase)
+ruleDvAdvReceiptCallback              // dv/dv/advert_data.go: stamp in-flight DV adv receipts
+rulePfxSvsDeliveryCallback           // dv/dv/prefix.go: stamp in-flight prefix SVS deliveries
 
 // Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
 // no MulticastStrategyTable, different router.go pfxSvs API).
@@ -107,9 +109,10 @@ pkg("dv/table", map[string][]fileRule{
 "prefix_table.go": {rulePrefixEventHooks},
 }),
 pkg("dv/dv", map[string][]fileRule{
-		"table_algo.go": {rulePostUpdateRibConvergenceHook},
-"router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
-}),
+		"table_algo.go":  {rulePostUpdateRibConvergenceHook},
+		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
+		"advert_data.go": {ruleDvAdvReceiptCallback},
+	}),
 pkg("dv/nfdc", map[string][]fileRule{
 "nfdc.go": {ruleNfdcChannelSend, ruleInjectNfdcSimExtensions},
 }),
@@ -149,7 +152,8 @@ pkg("dv/table", map[string][]fileRule{
 pkg("dv/dv", map[string][]fileRule{
 		"table_algo.go": {rulePostUpdateRibConvergenceHook},
 "router.go": {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensions},
-"prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions, ruleSvsALOMaxPipelineSim},
+"prefix.go": {ruleFaceEventsGuard, ruleInjectPrefixSimExtensions, ruleSvsALOMaxPipelineSim, rulePfxSvsDeliveryCallback},
+"advert_data.go": {ruleDvAdvReceiptCallback},
 }),
 // dv/nfdc: inject simExec (eliminates nfdc_sim.go overlay).
 pkg("dv/nfdc", map[string][]fileRule{
@@ -316,6 +320,20 @@ case ruleInjectRouterSimExtensions:
 // _ndndsim already in router.go from global go→_ndndsim.Go rule.
 // ndn_sync is added inside applyRouterSimExtensions.
 modified = applyRouterSimExtensions(file, fset) || modified
+
+case ruleDvAdvReceiptCallback:
+// Inject ndndsim.NdndsimRecordDvAdvReceipt() in advert_data.go dataHandler.
+if applyDvAdvReceiptCallback(file) {
+modified = true
+ndndsimUsed = true
+}
+
+case rulePfxSvsDeliveryCallback:
+// Inject ndndsim.NdndsimRecordPfxSvsDelivery() in prefix.go SubscribePublisher callback.
+if applyPfxSvsDeliveryCallback(file) {
+modified = true
+ndndsimUsed = true
+}
 
 // --- Onephase code-injection rules ---
 

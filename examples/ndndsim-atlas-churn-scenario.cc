@@ -564,59 +564,74 @@ main(int argc, char* argv[])
     stackHelper.Install(nodes);
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
 
-    // Announce prefixes after DV convergence, and optionally schedule churn
+    // Announce prefixes after DV convergence, and optionally schedule churn.
+    // Uses in-flight DV advertisement silence detection via polling.
     if (numPrefixes > 0 || churnAfterConvergence)
     {
         NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
         bool collectSuppression = !suppressTrace.empty();
-        RegisterRoutingConvergedCallback(
-            [nodes, numPrefixes, churnAfterConvergence, churnMargin,
-             churnDuration, churnEvents, collectSuppression]() {
-            double now = Simulator::Now().GetSeconds();
-            std::cout << now
-                      << "s: DV CONVERGED — announcing " << numPrefixes
-                      << " prefixes per node" << std::endl;
-            LogEvent(now, "dv_converged", "");
-            for (uint32_t i = 0; i < nodes.GetN(); ++i)
+        const int64_t silenceNs = static_cast<int64_t>(2.0 * 1e9); // 2s silence
+        const int64_t startNs = Simulator::Now().GetNanoSeconds();
+        auto converged = std::make_shared<bool>(false);
+        auto checkerPtr = std::make_shared<std::function<void()>>();
+        *checkerPtr = [checkerPtr, silenceNs, startNs, traceInterval, converged,
+                       nodes, numPrefixes, churnAfterConvergence, churnMargin,
+                       churnDuration, churnEvents, collectSuppression]() {
+            int64_t nowNs = Simulator::Now().GetNanoSeconds();
+            int64_t lastAdvNs = NdndSimGetLastDvAdvReceiptNs();
+            int64_t refNs = (lastAdvNs >= 0) ? lastAdvNs : startNs;
+            if ((nowNs - refNs) >= silenceNs)
             {
-                auto stack = nodes.Get(i)->GetObject<NdndStack>();
-                for (int j = 0; j < numPrefixes; ++j)
+                *converged = true;
+                double now = Simulator::Now().GetSeconds();
+                std::cout << now
+                          << "s: DV CONVERGED — announcing " << numPrefixes
+                          << " prefixes per node" << std::endl;
+                LogEvent(now, "dv_converged", "");
+                for (uint32_t i = 0; i < nodes.GetN(); ++i)
                 {
-                    std::string pfx =
-                        "/data/node" + std::to_string(i) + "/pfx" + std::to_string(j);
-                    stack->AnnouncePrefixToDv(pfx);
+                    auto stack = nodes.Get(i)->GetObject<NdndStack>();
+                    for (int j = 0; j < numPrefixes; ++j)
+                    {
+                        std::string pfx =
+                            "/data/node" + std::to_string(i) + "/pfx" + std::to_string(j);
+                        stack->AnnouncePrefixToDv(pfx);
+                    }
                 }
-            }
-            LogEvent(now, "prefixes_announced",
-                     std::to_string(numPrefixes) + "_per_node");
+                LogEvent(now, "prefixes_announced",
+                         std::to_string(numPrefixes) + "_per_node");
 
-            if (churnAfterConvergence && !churnEvents.empty())
-            {
-                double churnBase = now + churnMargin;
-                Simulator::Schedule(Seconds(churnMargin),
-                    [nodes, churnEvents, churnBase, collectSuppression]() {
-                        if (collectSuppression)
-                        {
-                            g_suppressionStart = std::make_unique<SuppressionSnapshot>(
-                                CollectSuppressionSnapshot(nodes));
-                            g_suppressionStartTime = Simulator::Now().GetSeconds();
-                        }
-                        ScheduleChurnEvents(churnEvents, churnBase);
-                    });
-            }
+                if (churnAfterConvergence && !churnEvents.empty())
+                {
+                    double churnBase = now + churnMargin;
+                    Simulator::Schedule(Seconds(churnMargin),
+                        [nodes, churnEvents, churnBase, collectSuppression]() {
+                            if (collectSuppression)
+                            {
+                                g_suppressionStart = std::make_unique<SuppressionSnapshot>(
+                                    CollectSuppressionSnapshot(nodes));
+                                g_suppressionStartTime = Simulator::Now().GetSeconds();
+                            }
+                            ScheduleChurnEvents(churnEvents, churnBase);
+                        });
+                }
 
-            // Dynamic stop: always schedule when churn_after_convergence
-            // so even baseline (empty events) terminates promptly.
-            if (churnAfterConvergence && churnDuration > 0)
-            {
-                double stopDelay = churnMargin + churnDuration;
-                std::cout << now << "s: scheduling sim stop at t="
-                          << (now + stopDelay) << "s (conv + "
-                          << churnMargin << "s margin + "
-                          << churnDuration << "s churn)" << std::endl;
-                Simulator::Stop(Seconds(stopDelay));
+                // Dynamic stop: always schedule when churn_after_convergence
+                // so even baseline (empty events) terminates promptly.
+                if (churnAfterConvergence && churnDuration > 0)
+                {
+                    double stopDelay = churnMargin + churnDuration;
+                    std::cout << now << "s: scheduling sim stop at t="
+                              << (now + stopDelay) << "s (conv + "
+                              << churnMargin << "s margin + "
+                              << churnDuration << "s churn)" << std::endl;
+                    Simulator::Stop(Seconds(stopDelay));
+                }
+                return;
             }
-        });
+            Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+        };
+        Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
     }
 
     // ─── Schedule churn events (immediate mode — absolute times) ───
@@ -668,8 +683,7 @@ main(int argc, char* argv[])
     if (!convTrace.empty())
     {
         std::ofstream ofs(convTrace);
-        int64_t convNs = NdndSimGetRoutingConvergenceNs(
-            static_cast<int>(nodes.GetN()));
+        int64_t convNs = NdndSimGetLastDvAdvReceiptNs();
         if (convNs >= 0)
             ofs << (static_cast<double>(convNs) / 1e9) << std::endl;
         else

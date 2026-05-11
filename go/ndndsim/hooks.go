@@ -296,3 +296,43 @@ func SvsMaxPipelineSize() uint64 {
 	}
 	return 0
 }
+
+// pfxSvsDeliveryCallback is invoked whenever a prefix SVS publication is
+// delivered to any node's subscription callback.  Used by the sim to record
+// in-flight delivery timestamps for convergence detection.
+var pfxSvsDeliveryCallback func()
+
+// SetPfxSvsDeliveryCallback registers a function to be called whenever a
+// prefix SVS publication is delivered to a subscription callback.
+func SetPfxSvsDeliveryCallback(fn func()) {
+	pfxSvsDeliveryCallback = fn
+}
+
+// NdndsimRecordPfxSvsDelivery invokes the registered prefix SVS delivery
+// callback, if any.  Called by transformed dv/dv/prefix.go when a remote
+// prefix publication is delivered via SVS.
+func NdndsimRecordPfxSvsDelivery() {
+	if pfxSvsDeliveryCallback != nil {
+		pfxSvsDeliveryCallback()
+	}
+}
+
+// dvAdvReceiptCallback is invoked whenever a DV advertisement is received
+// from a neighbor (in-flight arrival at a transit node).  Used by the sim to
+// record in-flight delivery timestamps for DV convergence detection.
+var dvAdvReceiptCallback func()
+
+// SetDvAdvReceiptCallback registers a function to be called whenever a DV
+// advertisement is received from a neighbor.
+func SetDvAdvReceiptCallback(fn func()) {
+	dvAdvReceiptCallback = fn
+}
+
+// NdndsimRecordDvAdvReceipt invokes the registered DV advertisement receipt
+// callback, if any.  Called by transformed dv/dv/advert_data.go when a
+// DV advertisement is received from a neighbor.
+func NdndsimRecordDvAdvReceipt() {
+	if dvAdvReceiptCallback != nil {
+		dvAdvReceiptCallback()
+	}
+}

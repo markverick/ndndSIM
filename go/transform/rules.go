@@ -1146,3 +1146,122 @@ func applyDisablePfxSvsSnapshot(file *ast.File) bool {
 	}, nil)
 	return modified
 }
+
+// ---------------------------------------------------------------------------
+// Rule: inject ndndsim.NdndsimRecordDvAdvReceipt() in advert_data.go dataHandler
+// ---------------------------------------------------------------------------
+
+// applyDvAdvReceiptCallback injects ndndsim.NdndsimRecordDvAdvReceipt() into
+// advert_data.go's dataHandler after the advertisement is parsed successfully.
+// This stamps the in-flight receipt timestamp for convergence detection.
+func applyDvAdvReceiptCallback(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "dataHandler" || fd.Body == nil {
+			continue
+		}
+		// Find the assignment "ns.Advert = advert" and inject before it.
+		found := false
+		for i, stmt := range fd.Body.List {
+			assign, ok := stmt.(*ast.AssignStmt)
+			if !ok || len(assign.Lhs) != 1 || !isSelectorExpr(assign.Lhs[0], "ns", "Advert") {
+				continue
+			}
+			injectStmt := &ast.ExprStmt{X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("_ndndsim"),
+					Sel: ast.NewIdent("NdndsimRecordDvAdvReceipt"),
+				},
+			}}
+			fd.Body.List = append(fd.Body.List[:i], append([]ast.Stmt{injectStmt}, fd.Body.List[i:]...)...)
+			modified = true
+			found = true
+			break
+		}
+		if found {
+			break
+		}
+	}
+	return modified
+}
+
+// ---------------------------------------------------------------------------
+// Rule: inject ndndsim.NdndsimRecordPfxSvsDelivery() in prefix.go SubscribePublisher
+// ---------------------------------------------------------------------------
+
+// applyPfxSvsDeliveryCallback injects ndndsim.NdndsimRecordPfxSvsDelivery()
+// into prefix.go's SubscribePublisher callback to stamp in-flight delivery.
+func applyPfxSvsDeliveryCallback(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "onPublisher" || fd.Body == nil {
+			continue
+		}
+		astutil.Apply(fd.Body, func(c *astutil.Cursor) bool {
+			call, ok := c.Node().(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "SubscribePublisher" {
+				return true
+			}
+			if len(call.Args) != 2 {
+				return true
+			}
+			callback, ok := call.Args[1].(*ast.FuncLit)
+			if !ok || callback.Body == nil || len(callback.Body.List) == 0 {
+				return true
+			}
+			if isNdndsimRecordPfxSvsDelivery(callback.Body.List[0]) {
+				return true
+			}
+			injectStmt := &ast.ExprStmt{X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("_ndndsim"),
+					Sel: ast.NewIdent("NdndsimRecordPfxSvsDelivery"),
+				},
+			}}
+			callback.Body.List = append([]ast.Stmt{injectStmt}, callback.Body.List...)
+			modified = true
+			return false
+		}, nil)
+		if modified {
+			break
+		}
+	}
+	return modified
+}
+
+func isIdent(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func isSelectorExpr(expr ast.Expr, xName, selName string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == xName && sel.Sel.Name == selName
+}
+
+func isNdndsimRecordPfxSvsDelivery(stmt ast.Stmt) bool {
+	es, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "NdndsimRecordPfxSvsDelivery" {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "_ndndsim"
+}

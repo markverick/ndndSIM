@@ -45,7 +45,6 @@ extern "C"
                                             const char* dataName, uint32_t nameLen);
 
     /** Called once when DV routing has converged (all nodes reachable). */
-    typedef void (*NdndSimRoutingConvergedFunc)(void);
 
     /*
      * Functions exported by the Go shared library.
@@ -58,9 +57,7 @@ extern "C"
                              NdndSimCancelEventFunc cancelEventCb,
                              NdndSimGetTimeNsFunc getTimeNsCb,
                              NdndSimDataProducedFunc dataProducedCb,
-                             NdndSimDataReceivedFunc dataReceivedCb,
-                             NdndSimRoutingConvergedFunc routingConvergedCb);
-
+                             NdndSimDataReceivedFunc dataReceivedCb);
     /** Tell the Go runtime how many DV nodes exist so it can detect convergence. */
     extern void NdndSimSetTotalNodes(int totalNodes);
 
@@ -165,14 +162,12 @@ extern "C"
     /** Get DV convergence for a prefix as
      *  (last AddRemotePrefix receive time - first GlobalAnnounce origin time),
      *  in nanoseconds of simulation time. Returns -1 if unavailable. */
-    extern int64_t NdndSimGetDvUpdateSpanNs(char* prefixStr, int prefixLen);
 
     /** Get routing convergence time in nanoseconds of simulation time.
      *  Convergence = time from first RouterReachable event to the event
      *  that makes ALL nodes have routes to ALL other nodes.
      *  totalNodes must match the number of DV-enabled nodes.
      *  Returns -1 if not all nodes have converged. */
-    extern int64_t NdndSimGetRoutingConvergenceNs(int totalNodes);
 
     /** Get the total number of PrefixEventAddRemotePrefix events received
      *  since simulation start.  C++ may poll this value at regular intervals
@@ -200,12 +195,22 @@ extern "C"
     extern int64_t NdndSimGetConvergenceMetricMin(void);
 
     /** Returns the ns-3 simulation time (nanoseconds) of the most recent DV
-     *  heartbeat advertisement fired by any node.  C++ uses this to detect
-     *  advertisement silence: if (Simulator::Now().GetNanoSeconds() -
-     *  NdndSimGetLastAdvTimeNs()) > adv_interval_ns + epsilon, no DV
-     *  advertisements are in-flight and convergence is complete.
-     *  Returns 0 before the first heartbeat fires. */
-    extern int64_t NdndSimGetLastAdvTimeNs(void);
+     *  advertisement received from a neighbor at any node.  This fires as the
+     *  advertisement passes through each transit node (in-flight), not when it
+     *  arrives at the destination.  Returns -1 before the first receipt.
+     *  C++ uses this to detect DV advertisement silence: once
+     *  (now_ns - lastDvAdvReceiptNs) exceeds the heartbeat interval + epsilon,
+     *  no DV advertisements are in-flight and routing convergence is complete. */
+    extern int64_t NdndSimGetLastDvAdvReceiptNs(void);
+
+    /** Returns the ns-3 simulation time (nanoseconds) of the most recent prefix
+     *  SVS publication delivery to any node's subscription callback.  This fires
+     *  as prefix Data passes through each transit node (in-flight), not when it
+     *  arrives at the destination.  Returns -1 before the first delivery.
+     *  C++ uses this to detect prefix SVS silence: once
+     *  (now_ns - lastPfxSvsDeliveryNs) exceeds the sync period + epsilon, no
+     *  prefix SVS Data is in-flight and prefix convergence is complete. */
+    extern int64_t NdndSimGetLastPfxSvsDeliveryNs(void);
 
     /** Returns the ns-3 simulation time (nanoseconds) of the most recent
      *  PrefixEventAddRemotePrefix event received by any node — i.e. the last
@@ -217,7 +222,6 @@ extern "C"
      *  can stabilise while some nodes are still mid-fetch (the missing entries
      *  are not yet counted), but this timestamp advances on every Data
      *  delivery.  Silence here means no prefix Data is in-flight anywhere. */
-    extern int64_t NdndSimGetLastPfxActivityNs(void);
 
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
@@ -258,7 +262,6 @@ void RegisterDataReceivedCallback(uint32_t nodeId,
 
 /** Register a callback invoked once when DV routing converges.
  *  Must be called before Simulator::Run(). */
-void RegisterRoutingConvergedCallback(std::function<void()> cb);
 
 } // namespace ndndsim
 } // namespace ns3

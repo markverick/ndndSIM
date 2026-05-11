@@ -146,8 +146,6 @@ func (sd *SimDvRouter) scheduleHeartbeat() {
 		fwd.withNodeFib(func() {
 			sd.router.RunHeartbeat()
 		})
-		// Stamp the time of this advertisement so C++ can detect silence.
-		lastAdvTimeNs.Store(sd.clock.Now().UnixNano())
 		sd.scheduleHeartbeat()
 	})
 }
