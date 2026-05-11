@@ -484,21 +484,13 @@ var _pfxCancel sync.Map // *Router → func()
 // _pfxReachable tracks the last-known reachable-router count per Router.
 var _pfxReachable sync.Map // *Router → int
 
-// startPfxOnce implements a debounced startup of the prefix SVS daemon.
+// startPfxOnce implements a deferred startup of the prefix SVS daemon.
 // It is called from runConvergenceHook() in notify.go on every RIB update,
 // with the current number of reachable routers passed as reachableCount.
 //
-// The debounce timer is reset ONLY when reachableCount grows (a new router
-// became reachable).  Periodic re-advertisements that do not change the RIB
-// do not grow the count and therefore do not reset the timer.  Once DV has
-// fully converged the count stabilises and the timer fires after exactly
-// 1×AdvertisementSyncInterval, starting pfxSvs with a complete routing table.
-//
-// This prevents the O(N²) fetch storm that occurs when pfxSvs starts before
-// DV routing is complete: on a 960-node, 10-hop topology with 1s adv-interval
-// DV takes ~10s to converge; on a 2-node test topology with 5s adv-interval
-// it converges in ~5s.  In both cases pfxSvs starts ~1 adv-interval after the
-// last new route, well within the available sim budget.
+// In fresh mode, this is the ONLY place where PES subscriptions are set up:
+// SubscribePublisher is called for all known neighbors before pfxSvs.Start().
+// (In snap-import mode, subscriptions are also set up in ImportSnapshot.)
 //
 // We call the three sub-components of PrefixModule.Start() directly instead of
 // Start() itself because Start() calls pfx.pfx.Reset() which wipes announcements
@@ -508,25 +500,50 @@ func (dv *Router) startPfxOnce(reachableCount int) {
 	if _, ok := _pfxStarted.Load(dv); ok {
 		return
 	}
-	// Only reset the debounce timer when a new router became reachable.
-	// Periodic re-advertisements keep reachableCount constant and are ignored.
-	old, _ := _pfxReachable.Swap(dv, reachableCount)
-	if old != nil && reachableCount <= old.(int) {
+	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); loaded {
 		return
 	}
-	// Reachable count grew: cancel any pending timer and reschedule.
+	// Cancel any pending debounce timer.
 	if prev, ok := _pfxCancel.Load(dv); ok {
 		prev.(func())()
 	}
-	cancel := _ndndsim.AfterFunc(dv.config.AdvertisementSyncInterval(), func() {
-		if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
-			dv.pfx.pfxSvs.Start()
-			dv.pfx.startFaceEvents()
-			dv.pfx.startPrefixPrune()
+
+	// Subscribe to PES routers before starting pfxSvs.
+	// In snap-import mode this was already done in ImportSnapshot.
+	// In fresh mode we need to subscribe to all known neighbors.
+	selfName := dv.config.RouterName()
+	for _, ns := range dv.neighbors.GetAll() {
+		router := ns.Name
+		if router.Equal(selfName) {
+			continue
 		}
-		_pfxCancel.Delete(dv)
-	})
-	_pfxCancel.Store(dv, func() { cancel.Stop() })
+		routerHash := router.Hash()
+		if _, ok := dv.pfx.pfxSubs[routerHash]; ok {
+			continue
+		}
+		dv.pfx.pfxSeen[routerHash] = router.Clone()
+		dv.pfx.pfxSubs[routerHash] = router.Clone()
+		if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
+			route := dv.pfx.pfxGroup.Append(router...)
+			dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
+				Module:  "pet",
+				Cmd:     "add-egress",
+				Args:    &mgmt.ControlArgs{Name: route, Egress: &mgmt.EgressRecord{Name: router.Clone()}},
+				Retries: -1,
+			})
+		}
+		dv.pfx.pfxSvs.SubscribePublisher(router, func(sp ndn_sync.SvsPub) {
+			_ndndsim.NdndsimRecordPfxSvsDelivery()
+			dv.pfx.mu.Lock()
+			_, petOps := dv.pfx.processUpdate(sp.Content)
+			dv.pfx.mu.Unlock()
+			dv.pfx.applyPetOps(petOps)
+		})
+	}
+
+	dv.pfx.pfxSvs.Start()
+	dv.pfx.startFaceEvents()
+	dv.pfx.startPrefixPrune()
 }
 
 // Nfdc returns the NFD management thread.
@@ -782,6 +799,79 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 		realNs.AdvertSeq = sn.AdvertSeq
 		dv.mutex.Unlock()
 		dv.updateRib(realNs)
+	}
+
+	// Install all restored PES entries to PET.
+	// After ImportInstanceState, the SVS considers restored publications as
+	// already-seen (Latest seqnos are restored), so SubscribePublisher callbacks
+	// will NOT fire for them. We must directly install to PET here.
+	selfName := dv.config.RouterName().TlvStr()
+	dv.mutex.Lock()
+	for _, pfxEntry := range dv.pfx.SnapshotEntries() {
+		routerName := pfxEntry.Router.TlvStr()
+		if routerName == selfName {
+			continue // skip self
+		}
+		routerHash := pfxEntry.Router.Hash()
+		_, alreadySubscribed := dv.pfx.pfxSubs[routerHash]
+		if alreadySubscribed {
+			// Already subscribed (from stage-1 or from running startPfxOnce
+			// before ImportSnapshot). Just install to PET if needed.
+			if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
+				route := dv.pfx.pfxGroup.Append(pfxEntry.Router...)
+				dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
+					Module:  "pet",
+					Cmd:     "add-egress",
+					Args:    &mgmt.ControlArgs{Name: route, Egress: &mgmt.EgressRecord{Name: pfxEntry.Router.Clone()}},
+					Retries: -1,
+				})
+			}
+			continue
+		}
+		// New subscription: add to pfxSeen/pfxSubs and install to PET.
+		dv.pfx.pfxSeen[routerHash] = pfxEntry.Router.Clone()
+		dv.pfx.pfxSubs[routerHash] = pfxEntry.Router.Clone()
+		if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
+			route := dv.pfx.pfxGroup.Append(pfxEntry.Router...)
+			dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
+				Module:  "pet",
+				Cmd:     "add-egress",
+				Args:    &mgmt.ControlArgs{Name: route, Egress: &mgmt.EgressRecord{Name: pfxEntry.Router.Clone()}},
+				Retries: -1,
+			})
+		}
+		// Subscribe to receive future PES updates from this router.
+		err := dv.pfx.pfxSvs.SubscribePublisher(pfxEntry.Router, func(sp ndn_sync.SvsPub) {
+			_ndndsim.NdndsimRecordPfxSvsDelivery()
+			dv.pfx.mu.Lock()
+			_, petOps := dv.pfx.processUpdate(sp.Content)
+			dv.pfx.mu.Unlock()
+			dv.pfx.applyPetOps(petOps)
+		})
+		if err != nil {
+			delete(dv.pfx.pfxSubs, routerHash)
+			log.Warn(dv.pfx, "ImportSnapshot: failed to subscribe to PES router", "router", pfxEntry.Router, "err", err)
+		}
+	}
+	dv.mutex.Unlock()
+
+	// Start pfxSvs immediately since the snapshot represents already-converged
+	// routing state. Unlike fresh startup (where debouncing prevents broadcast
+	// storms before nexthops exist), an imported snapshot already has RIB/FIB
+	// entries installed, so there's no storm risk.
+	// Cancel any pending startPfxOnce timer first to prevent double-start.
+	if cancel, ok := _pfxCancel.Load(dv); ok {
+		cancel.(func())()
+		_pfxCancel.Delete(dv)
+	}
+	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
+		dv.pfx.pfxSvs.Start()
+		// Note: do NOT call startFaceEvents() here. The face event history is
+		// not available at ImportSnapshot time (before simulation starts), so
+		// calling it would only fetch a partial/incomplete set of faces.
+		// The face events will be processed naturally when DV convergence
+		// triggers startPfxOnce later. Similarly, prefix prune runs on its own
+		// timer and doesn't need to be started explicitly.
 	}
 
 	return nil
