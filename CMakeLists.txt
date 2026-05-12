@@ -127,6 +127,7 @@ add_custom_command(
         GO=${_GO_BIN}
         NDND_PHASE=${NDNDSIM_PHASE}
         OUT_LIB=${NDND_GO_ARCHIVE}
+        NDND_GIT_URL=https://github.com/named-data/ndnd.git
         bash ${NDNDSIM_GO_DIR}/build.sh
     COMMENT "Building NDNd Go simulation library (phase: ${NDNDSIM_PHASE})"
     DEPENDS ${NDND_GO_SOURCES}
