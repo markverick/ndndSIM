@@ -1,4 +1,0 @@
-[submodule "ndnd"]
-	path = ndnd
-	url = https://github.com/named-data/ndnd.git
-	branch = dv2
