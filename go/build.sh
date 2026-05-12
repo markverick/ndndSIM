@@ -111,9 +111,10 @@ copy_overlay_additions() {
 WORK_DIR="$(mktemp -d)"
 
 if [ -n "$NDND_GIT_URL" ]; then
-    echo "==> Cloning ${NDND_GIT_URL} (branch: ${NDND_GIT_BRANCH})"
+    echo "==> Cloning ${NDND_GIT_URL} (branch: ${NDND_GIT_BRANCH}, commit: ${NDND_HASH})"
     trap 'rm -rf "$WORK_DIR"' EXIT
     git clone --depth 1 --branch "$NDND_GIT_BRANCH" "$NDND_GIT_URL" "$WORK_DIR"
+    git -C "$WORK_DIR" checkout "$NDND_HASH"
 else
     echo "==> Using clean ndnd at ${NDND_HASH} (local worktree)"
     trap 'git -C "$NDND_SRC" worktree remove --force "$WORK_DIR" 2>/dev/null; rm -rf "$WORK_DIR"' EXIT
