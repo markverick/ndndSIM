@@ -317,6 +317,11 @@ func NdndsimRecordPfxSvsDelivery() {
 	}
 }
 
+// NdndsimDebugPfxSvsCallbackRegistered returns whether the callback is registered.
+func NdndsimDebugPfxSvsCallbackRegistered() bool {
+	return pfxSvsDeliveryCallback != nil
+}
+
 // dvAdvReceiptCallback is invoked whenever a DV advertisement is received
 // from a neighbor (in-flight arrival at a transit node).  Used by the sim to
 // record in-flight delivery timestamps for DV convergence detection.

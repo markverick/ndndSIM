@@ -245,10 +245,11 @@ main(int argc, char* argv[])
         {
             const int64_t silenceNs = static_cast<int64_t>(stableWindow * 1e9);
             const int64_t startNs = Simulator::Now().GetNanoSeconds();
-            auto dvConverged = std::make_shared<bool>(false);
+            auto dvConverging = std::make_shared<bool>(false);
+            auto pfxActivityConfirmed = std::make_shared<bool>(false);
             auto checkerPtr = std::make_shared<std::function<void()>>();
-            *checkerPtr = [checkerPtr, silenceNs, startNs, traceInterval, dvConverged,
-                           stableWindow, edgeNodes, numPrefixes, exportSnap]() {
+            *checkerPtr = [checkerPtr, silenceNs, startNs, traceInterval, dvConverging,
+                           pfxActivityConfirmed, stableWindow, edgeNodes, numPrefixes, exportSnap]() {
                 int64_t nowNs = Simulator::Now().GetNanoSeconds();
                 int64_t lastAdvNs = NdndSimGetLastDvAdvReceiptNs();
                 // p=0 safety net: if no advertisements have been received yet,
@@ -259,8 +260,20 @@ main(int argc, char* argv[])
                 }
                 if ((nowNs - refNs) >= silenceNs)
                 {
-                    *dvConverged = true;
-                    // DV convergence detected: export snapshot and/or announce prefixes.
+                    *dvConverging = true;
+                }
+                // For stage1 with prefixes: wait for BOTH DV convergence AND at least one
+                // prefix SVS delivery before exporting. This ensures NdndsimRecordPfxSvsDelivery
+                // is being invoked, confirming the delivery callback is functional.
+                int64_t lastSvsNs = NdndSimGetLastPfxSvsDeliveryNs();
+                if (lastSvsNs >= 0) {
+                    *pfxActivityConfirmed = true;
+                }
+                bool readyToExport = (numPrefixes == 0) || *pfxActivityConfirmed;
+                if (*dvConverging && readyToExport)
+                {
+                    // DV convergence detected AND prefix SVS delivery confirmed (if prefixes expected):
+                    // export snapshot and/or announce prefixes.
                     if (!exportSnap.empty())
                     {
                         int rc = NdndSimExportSnapshot(exportSnap.c_str());
@@ -280,9 +293,14 @@ main(int argc, char* argv[])
                         // After DV convergence and prefix announcement, start stage 2
                         // prefix-SVS silence checker so the sim stops when prefixes have
                         // propagated (or after stableWindow of silence if no prefixes).
+                        //
+                        // NOTE: The prefix SVS silence window must be at least the SVS
+                        // periodic timeout (30s) to ensure all prefixes have propagated.
+                        // We use 32s to allow for SVS jitter (+/-3s).
+                        const double prefixSilenceWindow = 32.0;
                         if (stableWindow > 0)
                         {
-                            const int64_t prefixSilenceNs = static_cast<int64_t>(stableWindow * 1e9);
+                            const int64_t prefixSilenceNs = static_cast<int64_t>(prefixSilenceWindow * 1e9);
                             const int64_t prefixStartNs = Simulator::Now().GetNanoSeconds();
                             auto pfxCheckerPtr = std::make_shared<std::function<void()>>();
                             *pfxCheckerPtr = [pfxCheckerPtr, prefixSilenceNs, prefixStartNs,

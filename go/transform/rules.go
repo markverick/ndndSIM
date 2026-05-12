@@ -1265,3 +1265,79 @@ func isNdndsimRecordPfxSvsDelivery(stmt ast.Stmt) bool {
 	id, ok := sel.X.(*ast.Ident)
 	return ok && id.Name == "_ndndsim"
 }
+
+// ---------------------------------------------------------------------------
+// Rule: inject ndndsim.NdndsimRecordPfxSvsDelivery() in onephase table_algo.go
+// ---------------------------------------------------------------------------
+
+// applyPfxSvsDeliveryCallbackOp injects ndndsim.NdndsimRecordPfxSvsDelivery()
+// into onephase table_algo.go's updatePrefixSubs SubscribePublisher callback.
+func applyPfxSvsDeliveryCallbackOp(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "updatePrefixSubs" || fd.Body == nil {
+			continue
+		}
+		astutil.Apply(fd.Body, func(c *astutil.Cursor) bool {
+			call, ok := c.Node().(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "SubscribePublisher" {
+				return true
+			}
+			if len(call.Args) != 2 {
+				return true
+			}
+			callback, ok := call.Args[1].(*ast.FuncLit)
+			if !ok || callback.Body == nil || len(callback.Body.List) == 0 {
+				return true
+			}
+			if isNdndsimRecordPfxSvsDelivery(callback.Body.List[0]) {
+				return true
+			}
+			injectStmt := &ast.ExprStmt{X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("_ndndsim"),
+					Sel: ast.NewIdent("NdndsimRecordPfxSvsDelivery"),
+				},
+			}}
+			callback.Body.List = append([]ast.Stmt{injectStmt}, callback.Body.List...)
+			modified = true
+			return false
+		}, nil)
+		if modified {
+			break
+		}
+	}
+	return modified
+}
+
+// ---------------------------------------------------------------------------
+// Rule: inject ndndsim.NdndsimRecordPfxSvsDelivery() in onephase prefix_table.go
+// ---------------------------------------------------------------------------
+
+// applyPfxSvsDeliveryCallbackInApplyOp injects ndndsim.NdndsimRecordPfxSvsDelivery()
+// into onephase prefix_table.go's Apply function.
+func applyPfxSvsDeliveryCallbackInApplyOp(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "Apply" || fd.Body == nil {
+			continue
+		}
+		// Inject at the very beginning of the function body
+		injectStmt := &ast.ExprStmt{X: &ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   ast.NewIdent("_ndndsim"),
+				Sel: ast.NewIdent("NdndsimRecordPfxSvsDelivery"),
+			},
+		}}
+		fd.Body.List = append([]ast.Stmt{injectStmt}, fd.Body.List...)
+		modified = true
+		break
+	}
+	return modified
+}

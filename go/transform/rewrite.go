@@ -62,6 +62,8 @@ ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
 ruleSvsALOMaxPipelineSim              // dv/dv/prefix.go (twophase) + dv/dv/router.go (onephase)
 ruleDvAdvReceiptCallback              // dv/dv/advert_data.go: stamp in-flight DV adv receipts
 rulePfxSvsDeliveryCallback           // dv/dv/prefix.go: stamp in-flight prefix SVS deliveries
+	rulePfxSvsDeliveryCallbackOp        // dv/dv/table_algo.go (onephase): stamp in-flight prefix SVS deliveries
+	rulePfxSvsDeliveryCallbackInApplyOp // dv/table/prefix_table.go (onephase): stamp in-flight prefix SVS deliveries in Apply
 
 // Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
 // no MulticastStrategyTable, different router.go pfxSvs API).
@@ -106,10 +108,10 @@ pkg("fw/table", map[string][]fileRule{
 // Fixes lastSeen tracking and IsDead() in neighbor_table.go.
 pkg("dv/table", map[string][]fileRule{}),
 pkg("dv/table", map[string][]fileRule{
-"prefix_table.go": {rulePrefixEventHooks},
+"prefix_table.go": {rulePrefixEventHooks, rulePfxSvsDeliveryCallbackInApplyOp},
 }),
 pkg("dv/dv", map[string][]fileRule{
-		"table_algo.go":  {rulePostUpdateRibConvergenceHook},
+		"table_algo.go":  {rulePostUpdateRibConvergenceHook, rulePfxSvsDeliveryCallbackOp},
 		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
 		"advert_data.go": {ruleDvAdvReceiptCallback},
 	}),
@@ -331,6 +333,20 @@ ndndsimUsed = true
 case rulePfxSvsDeliveryCallback:
 // Inject ndndsim.NdndsimRecordPfxSvsDelivery() in prefix.go SubscribePublisher callback.
 if applyPfxSvsDeliveryCallback(file) {
+modified = true
+ndndsimUsed = true
+}
+
+case rulePfxSvsDeliveryCallbackOp:
+// Inject ndndsim.NdndsimRecordPfxSvsDelivery() in onephase table_algo.go SubscribePublisher callback.
+if applyPfxSvsDeliveryCallbackOp(file) {
+modified = true
+ndndsimUsed = true
+}
+
+case rulePfxSvsDeliveryCallbackInApplyOp:
+// Inject ndndsim.NdndsimRecordPfxSvsDelivery() in onephase prefix_table.go Apply function.
+if applyPfxSvsDeliveryCallbackInApplyOp(file) {
 modified = true
 ndndsimUsed = true
 }
