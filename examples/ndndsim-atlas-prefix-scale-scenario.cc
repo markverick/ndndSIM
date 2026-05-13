@@ -251,7 +251,8 @@ main(int argc, char* argv[])
             auto pfxActivityConfirmed = std::make_shared<bool>(false);
             auto checkerPtr = std::make_shared<std::function<void()>>();
             *checkerPtr = [checkerPtr, silenceNs, startNs, traceInterval, dvConverging,
-                           pfxActivityConfirmed, stableWindow, edgeNodes, numPrefixes, exportSnap]() {
+                           pfxActivityConfirmed, stableWindow, edgeNodes, numPrefixes, exportSnap,
+                           importSnap]() {
                 int64_t nowNs = Simulator::Now().GetNanoSeconds();
                 int64_t lastAdvNs = NdndSimGetLastDvAdvReceiptNs();
                 // p=0 safety net: if no advertisements have been received yet,
