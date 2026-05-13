@@ -237,6 +237,7 @@ main(int argc, char* argv[])
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };
             Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
+            return; // snap-import p=0: silence checker handles stopping
         }
     }
     else
