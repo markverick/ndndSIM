@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,7 +152,13 @@ func NdndSimInit(
 	lastDvAdvReceiptNs.Store(-1)
 
 	_ndndsim.SetPfxSvsDeliveryCallback(func() {
-		lastPfxSvsDeliveryNs.Store(_ndndsim.Now().UnixNano())
+		ns := _ndndsim.Now().UnixNano()
+		lastPfxSvsDeliveryNs.Store(ns)
+		// Debug: log every 100th delivery
+		count := prefixRemoteAddCount.Load()
+		if count%100 == 0 {
+			fmt.Printf("PFX_DELIVERY: count=%d ns=%d\n", count, ns)
+		}
 	})
 
 	_ndndsim.SetDvAdvReceiptCallback(func() {
@@ -678,6 +685,29 @@ func NdndSimGetDvSuppressionStats(nodeId C.uint32_t, enter *C.uint64_t, ok *C.ui
 	*ok = C.uint64_t(stats.Ok)
 	*fail = C.uint64_t(stats.Fail)
 	return 0
+}
+
+// NdndSimGetTotalPendingFetchInterests returns the total number of in-flight
+// prefix SVS data fetch Interests across all DV routers. This is the sum of
+// (Pending - Known) for each router's pfxSvs instance. A non-zero value
+// indicates there are Interests that have been sent but not yet satisfied.
+//
+// C++ callers use this to detect in-flight prefix data: the silence checker
+// should not stop the simulation as long as there are pending Interests, even
+// if no deliveries have been received recently.
+//
+//export NdndSimGetTotalPendingFetchInterests
+func NdndSimGetTotalPendingFetchInterests() C.uint64_t {
+	if globalRuntime == nil {
+		return 0
+	}
+	var total uint64
+	globalRuntime.IterNodes(func(_ uint32, node *Node) {
+		if dv := node.DvRouter(); dv != nil {
+			total += dv.Router().NumPendingFetchInterests()
+		}
+	})
+	return C.uint64_t(total)
 }
 
 func tableMetricsReport(node *Node) string {

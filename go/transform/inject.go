@@ -876,6 +876,15 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 
 	return nil
 }
+
+// NumPendingFetchInterests returns the total number of in-flight data fetch
+// Interests across all prefix SVS publishers.
+func (dv *Router) NumPendingFetchInterests() uint64 {
+	if dv.pfx == nil || dv.pfx.pfxSvs == nil {
+		return 0
+	}
+	return dv.pfx.pfxSvs.NumPendingFetchInterests()
+}
 `
 
 // ---------------------------------------------------------------------------
@@ -943,6 +952,48 @@ func (s *SvsALO) simQueuePubl(name enc.Name) {
 // no goroutine to signal.  Called by transformer-generated code replacing
 // s.stop <- struct{}{} in Stop().
 func (s *SvsALO) simStop() {}
+
+// NumPendingFetchInterests returns the total number of in-flight data fetch
+// Interests across all publishers. This is the sum of (Pending - Known) for
+// each publisher. A non-zero value indicates there are Interests that have
+// been sent but not yet satisfied.
+func (s *SvsALO) NumPendingFetchInterests() uint64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	totalPending := uint64(0)
+	for node := range s.state.Iter() {
+		for _, entry := range s.state[node.TlvStr()] {
+			totalPending += entry.Value.Pending - entry.Value.Known
+		}
+	}
+	return totalPending
+}
+
+// GetAllPublishers returns a map of all known publisher names (as strings).
+// Used by snapshot import to trigger consumeCheck after restoring state.
+func (s *SvsALO) GetAllPublishers() map[string]bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	publishers := make(map[string]bool)
+	for name := range s.state.Iter() {
+		publishers[name.TlvStr()] = true
+	}
+	return publishers
+}
+
+// ConsumeCheckForPublisherByString triggers a consumeCheck for a specific publisher
+// by string name. Used after snapshot import to start fetching prefix data.
+func (s *SvsALO) ConsumeCheckForPublisherByString(name string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	routerName, err := enc.NameFromTlvStr(name)
+	if err != nil {
+		return
+	}
+	s.consumeCheck(routerName)
+}
 `
 
 func applySvsAloSimExtensions(file *ast.File, fset *token.FileSet) bool {
@@ -1400,6 +1451,17 @@ func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	return ndn_sync.SuppressStats{}
 }
 
+// NumPendingFetchInterests returns the total number of in-flight prefix SVS
+// data fetch Interests for this router. This is the sum of (Pending - Known)
+// across all publishers. A non-zero value indicates there are Interests that
+// have been sent but not yet satisfied.
+func (dv *Router) NumPendingFetchInterests() uint64 {
+	if dv.pfxSvs == nil {
+		return 0
+	}
+	return dv.pfxSvs.NumPendingFetchInterests()
+}
+
 // LinkMulticastPrefixes returns the prefixes that must be explicitly forwarded
 // to all link faces for DV sync to reach neighbors.
 // At main@51774b8 there is no multicastFib/BROADCAST_STRATEGY; the caller
@@ -1631,6 +1693,11 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 	if len(snap.PfxSvsState) > 0 {
 		if err := dv.pfxSvs.ImportInstanceState(enc.Wire{snap.PfxSvsState}); err != nil {
 			log.Warn(dv, "ImportSnapshot: pfxSvs state restore failed", "err", err)
+		}
+		// After restoring SVS state, trigger consumeCheck for all known publishers
+		// to start fetching the prefix data that was in the snapshot.
+		for name := range dv.pfxSvs.GetAllPublishers() {
+			dv.pfxSvs.ConsumeCheckForPublisherByString(name)
 		}
 	}
 

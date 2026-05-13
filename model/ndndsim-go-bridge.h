@@ -212,6 +212,15 @@ extern "C"
      *  prefix SVS Data is in-flight and prefix convergence is complete. */
     extern int64_t NdndSimGetLastPfxSvsDeliveryNs(void);
 
+    /** Returns the total number of in-flight prefix SVS data fetch Interests
+     *  across all DV routers.  This is the sum of (Pending - Known) for each
+     *  router's pfxSvs instance.  A non-zero value indicates there are Interests
+     *  that have been sent but not yet satisfied.
+     *  C++ uses this to detect in-flight prefix data: the silence checker should
+     *  not stop the simulation as long as there are pending Interests, even if no
+     *  deliveries have been received recently. */
+    extern uint64_t NdndSimGetTotalPendingFetchInterests(void);
+
     /** Returns the ns-3 simulation time (nanoseconds) of the most recent
      *  PrefixEventAddRemotePrefix event received by any node — i.e. the last
      *  time any node successfully fetched and applied a remote prefix SVS
