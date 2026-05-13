@@ -200,7 +200,8 @@ main(int argc, char* argv[])
                 if (lastSvsNs >= 0) {
                     refNs = lastSvsNs;
                 }
-                if ((nowNs - refNs) >= silenceNs)
+                uint64_t pendingInterests = NdndSimGetTotalPendingFetchInterests();
+                if ((nowNs - refNs) >= silenceNs && pendingInterests == 0)
                 {
                     Simulator::Stop();
                     return;
@@ -227,7 +228,8 @@ main(int argc, char* argv[])
                 if (lastSvsNs >= 0) {
                     refNs = lastSvsNs;
                 }
-                if ((nowNs - refNs) >= silenceNs)
+                uint64_t pendingInterests = NdndSimGetTotalPendingFetchInterests();
+                if ((nowNs - refNs) >= silenceNs && pendingInterests == 0)
                 {
                     Simulator::Stop();
                     return;
@@ -311,7 +313,8 @@ main(int argc, char* argv[])
                                 if (lastSvsNs >= 0) {
                                     refNs = lastSvsNs;
                                 }
-                                if ((nowNs - refNs) >= prefixSilenceNs)
+                                uint64_t pendingInterests = NdndSimGetTotalPendingFetchInterests();
+                                if ((nowNs - refNs) >= prefixSilenceNs && pendingInterests == 0)
                                 {
                                     Simulator::Stop();
                                     return;
