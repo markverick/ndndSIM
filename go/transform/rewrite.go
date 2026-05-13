@@ -64,6 +64,7 @@ ruleDvAdvReceiptCallback              // dv/dv/advert_data.go: stamp in-flight D
 rulePfxSvsDeliveryCallback           // dv/dv/prefix.go: stamp in-flight prefix SVS deliveries
 	rulePfxSvsDeliveryCallbackOp        // dv/dv/table_algo.go (onephase): stamp in-flight prefix SVS deliveries
 	rulePfxSvsDeliveryCallbackInApplyOp // dv/table/prefix_table.go (onephase): stamp in-flight prefix SVS deliveries in Apply
+	ruleSnapPfxDeliveryStamp          // dv/dv/router.go (onephase): stamp pfx delivery after snapshot import
 
 // Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
 // no MulticastStrategyTable, different router.go pfxSvs API).
@@ -112,7 +113,7 @@ pkg("dv/table", map[string][]fileRule{
 }),
 pkg("dv/dv", map[string][]fileRule{
 		"table_algo.go":  {rulePostUpdateRibConvergenceHook, rulePfxSvsDeliveryCallbackOp},
-		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim},
+		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim, ruleSnapPfxDeliveryStamp},
 		"advert_data.go": {ruleDvAdvReceiptCallback},
 	}),
 pkg("dv/nfdc", map[string][]fileRule{
@@ -347,6 +348,13 @@ ndndsimUsed = true
 case rulePfxSvsDeliveryCallbackInApplyOp:
 // Inject ndndsim.NdndsimRecordPfxSvsDelivery() in onephase prefix_table.go Apply function.
 if applyPfxSvsDeliveryCallbackInApplyOp(file) {
+modified = true
+ndndsimUsed = true
+}
+
+case ruleSnapPfxDeliveryStamp:
+// Inject ndndsim.NdndsimRecordPfxSvsDelivery() after snapshot prefix table import.
+if applySnapPfxDeliveryStamp(file) {
 modified = true
 ndndsimUsed = true
 }

@@ -637,6 +637,74 @@ func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
 	return false
 }
 
+// ---------------------------------------------------------------------------
+// Rule: stamp pfx delivery after snapshot import (onephase only)
+// ---------------------------------------------------------------------------
+
+// applySnapPfxDeliveryStamp injects _ndndsim.NdndsimRecordPfxSvsDelivery()
+// after the prefix table is populated from snapshot import.
+// Without this, the silence checker sees -1 because snapshot import bypasses
+// the normal SVS delivery path, causing false negative convergence detection.
+func applySnapPfxDeliveryStamp(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name == nil || fd.Name.Name != "ImportSnapshot" || fd.Body == nil {
+			continue
+		}
+		// Find the "for _, pe := range snap.PfxTable" loop
+		var insertAfter ast.Stmt
+		for _, stmt := range fd.Body.List {
+			rangeStmt, ok := stmt.(*ast.RangeStmt)
+			if !ok {
+				continue
+			}
+			// X is the expression being ranged over
+			sel, ok := rangeStmt.X.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if sel.Sel == nil {
+				continue
+			}
+			ident, ok := sel.X.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if ident.Name == "snap" && sel.Sel.Name == "PfxTable" {
+				insertAfter = rangeStmt
+				break
+			}
+		}
+		if insertAfter == nil {
+			return modified
+		}
+		// Find the index of insertAfter in the body
+		idx := -1
+		for i, stmt := range fd.Body.List {
+			if stmt == insertAfter {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return modified
+		}
+		// Insert _ndndsim.NdndsimRecordPfxSvsDelivery() after the range loop
+		stmt := &ast.ExprStmt{
+			X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("_ndndsim"),
+					Sel: ast.NewIdent("NdndsimRecordPfxSvsDelivery"),
+				},
+			},
+		}
+		fd.Body.List = append(fd.Body.List[:idx+1], append([]ast.Stmt{stmt}, fd.Body.List[idx+1:]...)...)
+		modified = true
+	}
+	return modified
+}
+
 func applyPrefixEventHooks(file *ast.File) bool {
 	modified := false
 
