@@ -264,6 +264,16 @@ main(int argc, char* argv[])
                 {
                     *dvConverging = true;
                 }
+                // For snap-import (importSnap non-empty), there are no new DV advertisements
+                // flowing, so lastAdvNs stays at -1 and dvConverging never becomes true.
+                // Force dvConverging after 2x silence window to prevent indefinite waiting.
+                if (!importSnap.empty() && !*dvConverging)
+                {
+                    if ((nowNs - startNs) >= (silenceNs * 2))
+                    {
+                        *dvConverging = true;
+                    }
+                }
                 // For stage1 with prefixes: wait for BOTH DV convergence AND at least one
                 // prefix SVS delivery before exporting. This ensures NdndsimRecordPfxSvsDelivery
                 // is being invoked, confirming the delivery callback is functional.
