@@ -922,6 +922,83 @@ func applySvsSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	return true
 }
 
+// applySvsAloInitialStatePatch patches std/sync/svs_alo_initial_state.go
+// to skip entries with seqNo=0. This prevents the PES SVS from trying
+// to fetch snapshots from publishers that haven't published anything yet.
+func applySvsAloInitialStatePatch(file *ast.File, fset *token.FileSet) bool {
+	// Find and patch the s.state.Set call in parseInstanceState
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Name.Name != "parseInstanceState" {
+			continue
+		}
+		// Find the outer for-range loop
+		var rangeStmt *ast.RangeStmt
+		for _, stmt := range funcDecl.Body.List {
+			if r, ok := stmt.(*ast.RangeStmt); ok {
+				rangeStmt = r
+				break
+			}
+		}
+		if rangeStmt == nil {
+			return false
+		}
+		// Find the inner for-range loop (the seqNoEntries loop)
+		var innerRangeStmt *ast.RangeStmt
+		for _, stmt := range rangeStmt.Body.List {
+			if r, ok := stmt.(*ast.RangeStmt); ok {
+				innerRangeStmt = r
+				break
+			}
+		}
+		if innerRangeStmt == nil {
+			return false
+		}
+		// Find the s.state.Set call in the inner loop body
+		for _, stmt := range innerRangeStmt.Body.List {
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			call, ok := exprStmt.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Set" {
+				continue
+			}
+			// s.state.Set has sel.X as SelectorExpr{SelectorExpr{X:Ident"s", Sel:Ident"state"}, Sel:Ident"Set"}
+			// We need to check: sel.X is SelectorExpr and sel.X.X is Ident"s" and sel.X.Sel is Ident"state"
+			stateSel, ok := sel.X.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if stateSel.Sel.Name != "state" {
+				continue
+			}
+			sIdent, ok := stateSel.X.(*ast.Ident)
+			if !ok || sIdent.Name != "s" {
+				continue
+			}
+			// Found s.state.Set(...), insert the check before it
+			check := &ast.IfStmt{
+				Cond: &ast.BinaryExpr{
+					X:  &ast.SelectorExpr{X: &ast.Ident{Name: "seqEntry"}, Sel: &ast.Ident{Name: "SeqNo"}},
+					Op: token.EQL,
+					Y:  &ast.Ident{Name: "0"},
+				},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{&ast.BranchStmt{Tok: token.CONTINUE}},
+				},
+			}
+			innerRangeStmt.Body.List = append([]ast.Stmt{check}, innerRangeStmt.Body.List...)
+			return true
+		}
+	}
+	return false
+}
+
 // svsAloSimSnippet is injected into std/sync/svs_alo.go.
 // Provides direct-delivery helpers that replace the channel-based run() loop
 // in simulation mode.  All types (SvsALO, SvsPub, enc.Name) are already

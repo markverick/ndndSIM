@@ -228,8 +228,10 @@ main(int argc, char* argv[])
                 if (lastSvsNs >= 0) {
                     refNs = lastSvsNs;
                 }
-                uint64_t pendingInterests = NdndSimGetTotalPendingFetchInterests();
-                if ((nowNs - refNs) >= silenceNs && pendingInterests == 0)
+                // For p=0 snap-import: skip pendingInterests check. There are no prefixes
+                // to sync, so any in-flight PES SVS fetch failures are harmless. The
+                // pendingInterests check is omitted so failed retries don't block stopping.
+                if ((nowNs - refNs) >= silenceNs)
                 {
                     Simulator::Stop();
                     return;
@@ -237,7 +239,7 @@ main(int argc, char* argv[])
                 Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
             };
             Simulator::Schedule(Seconds(traceInterval), *checkerPtr);
-            return; // snap-import p=0: silence checker handles stopping
+            // fall through to Simulator::Run() - silence checker will stop
         }
     }
     else

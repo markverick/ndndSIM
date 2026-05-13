@@ -52,6 +52,7 @@ ruleInjectRibSimFunctions             // fw/table/rib.go  (needs _ndndsim import
 ruleInjectSvsSimExtensions            // std/sync/svs.go
 ruleSvsDeterministicRng               // std/sync/svs.go: per-instance seeded RNG
 ruleInjectSvsAloSimExtensions         // std/sync/svs_alo.go
+ruleSvsAloInitialStatePatch            // std/sync/svs_alo_initial_state.go: skip seqNo=0
 ruleSvsChannels                       // std/sync/svs.go: recvSv/stop sends → sim methods
 ruleSvsAloChannels                    // std/sync/svs_alo.go: stop/publpipe sends → sim methods
 ruleInjectSvsAloDataChannels          // std/sync/svs_alo_data.go: outpipe/errpipe sends
@@ -166,6 +167,7 @@ pkg("dv/nfdc", map[string][]fileRule{
 	pkg("std/sync", map[string][]fileRule{
 		"svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
 		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
+		"svs_alo_initial_state.go": {ruleSvsAloInitialStatePatch},
 			"svs_alo_data.go":         {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
 			"snapshot_node_latest.go": {ruleSnapshotEvictionDisableInSim},
 }),
@@ -273,6 +275,7 @@ modified = applySvsSimExtensions(file, fset) || modified
 		case ruleSvsDeterministicRng:
 			modified = applySvsDeterministicRNG(file) || modified
 		case ruleInjectSvsAloSimExtensions:
+			modified = applySvsAloInitialStatePatch(file, fset) || modified
 			modified = applySvsAloSimExtensions(file, fset) || modified
 
 		case ruleSvsChannels:
@@ -280,6 +283,9 @@ modified = applySvsSimExtensions(file, fset) || modified
 
 		case ruleSvsAloChannels:
 			modified = applySvsAloChannels(file) || modified
+
+		case ruleSvsAloInitialStatePatch:
+			modified = applySvsAloInitialStatePatch(file, fset) || modified
 
 		case ruleInjectSvsAloDataChannels:
 			modified = applySvsAloDataChannels(file) || modified
