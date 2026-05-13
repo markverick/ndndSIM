@@ -701,8 +701,10 @@ func (dv *Router) ExportSnapshot() RouterSnapshot {
 		}
 		snap.Neighbors = append(snap.Neighbors, sn)
 	}
-	if wire := dv.pfx.pfxSvs.ExportInstanceState(); len(wire) > 0 {
-		snap.PfxSvsState = wire.Join()
+	if dv.pfx != nil && dv.pfx.pfxSvs != nil {
+		if wire := dv.pfx.pfxSvs.ExportInstanceState(); len(wire) > 0 {
+			snap.PfxSvsState = wire.Join()
+		}
 	}
 	return snap
 }
@@ -865,7 +867,9 @@ func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
 		_pfxCancel.Delete(dv)
 	}
 	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
-		dv.pfx.pfxSvs.Start()
+		if dv.pfx != nil && dv.pfx.pfxSvs != nil {
+			dv.pfx.pfxSvs.Start()
+		}
 		// Note: do NOT call startFaceEvents() here. The face event history is
 		// not available at ImportSnapshot time (before simulation starts), so
 		// calling it would only fetch a partial/incomplete set of faces.
