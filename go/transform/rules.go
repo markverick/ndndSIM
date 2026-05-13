@@ -620,9 +620,18 @@ func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
 		if blockHasSelectorCall(fd.Body, "dv", "runConvergenceHook") {
 			return false
 		}
-		fd.Body.List = append(fd.Body.List, &ast.ExprStmt{X: &ast.CallExpr{
+		// Add Lparen/Rparen so go/format formats it as dv.runConvergenceHook()
+		call := &ast.CallExpr{
 			Fun: &ast.SelectorExpr{X: ast.NewIdent("dv"), Sel: ast.NewIdent("runConvergenceHook")},
-		}})
+		}
+		// Position Lparen at the last token of the function name
+		if fd.Body.List != nil && len(fd.Body.List) > 0 {
+			last := fd.Body.List[len(fd.Body.List)-1]
+			pos := last.End()
+			call.Lparen = pos
+			call.Rparen = token.Pos(int(pos) + 1)
+		}
+		fd.Body.List = append(fd.Body.List, &ast.ExprStmt{X: call})
 		return true
 	}
 	return false
