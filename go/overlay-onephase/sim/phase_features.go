@@ -30,16 +30,6 @@ func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
 	fwd.fib.InsertNextHopEnc(defn.LOCAL_PREFIX, faceID, 0)
 }
 
-// exportSimPetSnapshot is a no-op in onephase: there is no PET.
-func exportSimPetSnapshot(*SimForwarder) []petSnapshotEntry {
-	return nil
-}
-
-// importSimPetSnapshot is a no-op in onephase: there is no PET.
-func importSimPetSnapshot(*SimForwarder, []petSnapshotEntry) error {
-	return nil
-}
-
 func execSimPetMgmtCmd(*SimForwarder, string, *mgmt.ControlArgs, uint64) (any, error) {
 	return nil, fmt.Errorf("SimEngine: unsupported mgmt cmd pet")
 }

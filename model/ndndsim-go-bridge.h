@@ -187,13 +187,6 @@ extern "C"
      *  stableWindow seconds, prefix convergence is complete. */
     extern int64_t NdndSimGetConvergenceMetric(void);
 
-    /** Returns the minimum per-node value of the same metric used by
-     *  NdndSimGetConvergenceMetric (forwarder_pet for twophase, forwarder_fib
-     *  for onephase).  The stage-1 snapshot checker uses this so that the
-     *  snapshot is not exported until the slowest node has also finished
-     *  populating its table.  Returns 0 before any node has reported. */
-    extern int64_t NdndSimGetConvergenceMetricMin(void);
-
     /** Returns the ns-3 simulation time (nanoseconds) of the most recent DV
      *  advertisement received from a neighbor at any node.  This fires as the
      *  advertisement passes through each transit node (in-flight), not when it
@@ -234,15 +227,6 @@ extern "C"
 
     /** Destroy all nodes and clean up the simulation runtime. */
     extern void NdndSimDestroy(void);
-
-    /** Export the DV routing state of all nodes to a JSON snapshot file.
-     *  Returns 0 on success, -1 on error. */
-    extern int NdndSimExportSnapshot(const char* path);
-
-    /** Import DV routing state for all nodes from a JSON snapshot file.
-     *  Must be called after NdndSimStartDv for all nodes but before the
-     *  simulator advances time.  Returns 0 on success, -1 on error. */
-    extern int NdndSimImportSnapshot(const char* path);
 
 #ifdef __cplusplus
 }

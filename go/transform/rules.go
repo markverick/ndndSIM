@@ -637,74 +637,6 @@ func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// Rule: stamp pfx delivery after snapshot import (onephase only)
-// ---------------------------------------------------------------------------
-
-// applySnapPfxDeliveryStamp injects _ndndsim.NdndsimRecordPfxSvsDelivery()
-// after the prefix table is populated from snapshot import.
-// Without this, the silence checker sees -1 because snapshot import bypasses
-// the normal SVS delivery path, causing false negative convergence detection.
-func applySnapPfxDeliveryStamp(file *ast.File) bool {
-	modified := false
-	for _, decl := range file.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Name == nil || fd.Name.Name != "ImportSnapshot" || fd.Body == nil {
-			continue
-		}
-		// Find the "for _, pe := range snap.PfxTable" loop
-		var insertAfter ast.Stmt
-		for _, stmt := range fd.Body.List {
-			rangeStmt, ok := stmt.(*ast.RangeStmt)
-			if !ok {
-				continue
-			}
-			// X is the expression being ranged over
-			sel, ok := rangeStmt.X.(*ast.SelectorExpr)
-			if !ok {
-				continue
-			}
-			if sel.Sel == nil {
-				continue
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			if ident.Name == "snap" && sel.Sel.Name == "PfxTable" {
-				insertAfter = rangeStmt
-				break
-			}
-		}
-		if insertAfter == nil {
-			return modified
-		}
-		// Find the index of insertAfter in the body
-		idx := -1
-		for i, stmt := range fd.Body.List {
-			if stmt == insertAfter {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return modified
-		}
-		// Insert _ndndsim.NdndsimRecordPfxSvsDelivery() after the range loop
-		stmt := &ast.ExprStmt{
-			X: &ast.CallExpr{
-				Fun: &ast.SelectorExpr{
-					X:   ast.NewIdent("_ndndsim"),
-					Sel: ast.NewIdent("NdndsimRecordPfxSvsDelivery"),
-				},
-			},
-		}
-		fd.Body.List = append(fd.Body.List[:idx+1], append([]ast.Stmt{stmt}, fd.Body.List[idx+1:]...)...)
-		modified = true
-	}
-	return modified
-}
-
 func applyPrefixEventHooks(file *ast.File) bool {
 	modified := false
 
@@ -1169,55 +1101,6 @@ func applySetSvsALOMaxPipeline(file *ast.File) bool {
 				},
 			},
 		})
-		modified = true
-		return false
-	}, nil)
-	return modified
-}
-
-// ---------------------------------------------------------------------------
-// Rule: Snapshot: &ndn_sync.SnapshotNodeLatest{…} → &ndn_sync.SnapshotNull{}
-//       (router.go, onephase only)
-// ---------------------------------------------------------------------------
-
-// applyDisablePfxSvsSnapshot replaces the SVS-ALO snapshot strategy in
-// createPrefixTable from SnapshotNodeLatest to SnapshotNull, completely
-// disabling the SVS-internal publication-history snapshot.  The sim uses its
-// own stage1→snap→stage2 snapshot mechanism which is independent; the SVS
-// snapshot adds no value and interferes with sequential prefix delivery.
-func applyDisablePfxSvsSnapshot(file *ast.File) bool {
-	modified := false
-	astutil.Apply(file, func(c *astutil.Cursor) bool {
-		kv, ok := c.Node().(*ast.KeyValueExpr)
-		if !ok {
-			return true
-		}
-		key, ok := kv.Key.(*ast.Ident)
-		if !ok || key.Name != "Snapshot" {
-			return true
-		}
-		unary, ok := kv.Value.(*ast.UnaryExpr)
-		if !ok || unary.Op != token.AND {
-			return true
-		}
-		lit, ok := unary.X.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-		sel, ok := lit.Type.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "SnapshotNodeLatest" {
-			return true
-		}
-		pkg := sel.X.(*ast.Ident).Name // "ndn_sync"
-		kv.Value = &ast.UnaryExpr{
-			Op: token.AND,
-			X: &ast.CompositeLit{
-				Type: &ast.SelectorExpr{
-					X:   ast.NewIdent(pkg),
-					Sel: ast.NewIdent("SnapshotNull"),
-				},
-			},
-		}
 		modified = true
 		return false
 	}, nil)

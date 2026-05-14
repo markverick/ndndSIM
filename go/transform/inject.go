@@ -488,10 +488,7 @@ var _pfxReachable sync.Map // *Router → int
 // It is called from runConvergenceHook() in notify.go on every RIB update,
 // with the current number of reachable routers passed as reachableCount.
 //
-// In fresh mode, this is the ONLY place where PES subscriptions are set up:
-// SubscribePublisher is called for all known neighbors before pfxSvs.Start().
-// (In snap-import mode, subscriptions are also set up in ImportSnapshot.)
-//
+// PES subscriptions are set up here for all known neighbors before pfxSvs.Start().
 // We call the three sub-components of PrefixModule.Start() directly instead of
 // Start() itself because Start() calls pfx.pfx.Reset() which wipes announcements
 // queued before convergence.
@@ -509,8 +506,6 @@ func (dv *Router) startPfxOnce(reachableCount int) {
 	}
 
 	// Subscribe to PES routers before starting pfxSvs.
-	// In snap-import mode this was already done in ImportSnapshot.
-	// In fresh mode we need to subscribe to all known neighbors.
 	selfName := dv.config.RouterName()
 	for _, ns := range dv.neighbors.GetAll() {
 		router := ns.Name
@@ -592,293 +587,6 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 		enc.NewGenericComponent("prefix"),
 		enc.NewGenericComponent("withdraw"),
 	}
-}
-
-// RouterSnapshotRow is a JSON-serialisable RIB row.
-type RouterSnapshotRibRow struct {
-	Dest    string ` + "`" + `json:"dest"` + "`" + `
-	NextHop string ` + "`" + `json:"next_hop"` + "`" + `
-	Cost    uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshotFibRow is a JSON-serialisable FIB row.
-type RouterSnapshotFibRow struct {
-	Prefix string ` + "`" + `json:"prefix"` + "`" + `
-	FaceId uint64 ` + "`" + `json:"face_id"` + "`" + `
-	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshotPfxEntry is a JSON-serialisable prefix entry.
-type RouterSnapshotPfxEntry struct {
-	Router    string ` + "`" + `json:"router"` + "`" + `
-	Name      string ` + "`" + `json:"name"` + "`" + `
-	Multicast bool   ` + "`" + `json:"multicast"` + "`" + `
-	NextHops  []RouterSnapshotPfxNextHop ` + "`" + `json:"next_hops"` + "`" + `
-}
-
-// RouterSnapshotPfxNextHop is a JSON-serialisable prefix next-hop.
-type RouterSnapshotPfxNextHop struct {
-	Face uint64 ` + "`" + `json:"face"` + "`" + `
-	Cost uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshotNeighborEntry is one entry in an exported neighbor advertisement.
-type RouterSnapshotNeighborEntry struct {
-	Dest      string ` + "`" + `json:"dest"` + "`" + `
-	NextHop   string ` + "`" + `json:"next_hop"` + "`" + `
-	Cost      uint64 ` + "`" + `json:"cost"` + "`" + `
-	OtherCost uint64 ` + "`" + `json:"other_cost"` + "`" + `
-}
-
-// RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
-type RouterSnapshotNeighbor struct {
-	Name       string                        ` + "`" + `json:"name"` + "`" + `
-	Entries    []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
-	AdvertBoot uint64                        ` + "`" + `json:"advert_boot,omitempty"` + "`" + `
-	AdvertSeq  uint64                        ` + "`" + `json:"advert_seq,omitempty"` + "`" + `
-}
-
-// RouterSnapshot is the full serialisable state of a Router instance.
-type RouterSnapshot struct {
-	Rib        []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
-	Fib        []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
-	PfxEntries []RouterSnapshotPfxEntry  ` + "`" + `json:"pfx_entries"` + "`" + `
-	Neighbors  []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
-	PfxSvsState []byte                   ` + "`" + `json:"pfx_svs_state,omitempty"` + "`" + `
-}
-
-// ExportSnapshot captures the current DV state into a RouterSnapshot.
-// Must be called after DV and prefix-SVS have converged.
-func (dv *Router) ExportSnapshot() RouterSnapshot {
-	dv.mutex.Lock()
-	ribRows := dv.rib.Snapshot()
-	fibRows := dv.fib.Snapshot()
-	pfxEntries := dv.pfx.SnapshotEntries()
-	neighbors := dv.neighbors.GetAll()
-	dv.mutex.Unlock()
-
-	snap := RouterSnapshot{}
-	for _, r := range ribRows {
-		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
-			Dest:    r.Dest.TlvStr(),
-			NextHop: r.NextHop.TlvStr(),
-			Cost:    r.Cost,
-		})
-	}
-	for _, f := range fibRows {
-		snap.Fib = append(snap.Fib, RouterSnapshotFibRow{
-			Prefix: f.Prefix.TlvStr(),
-			FaceId: f.FaceId,
-			Cost:   f.Cost,
-		})
-	}
-	for _, e := range pfxEntries {
-		entry := RouterSnapshotPfxEntry{
-			Router:    e.Router.TlvStr(),
-			Name:      e.Name.TlvStr(),
-			Multicast: e.Multicast,
-		}
-		for _, nh := range e.NextHops {
-			entry.NextHops = append(entry.NextHops, RouterSnapshotPfxNextHop{Face: nh.Face, Cost: nh.Cost})
-		}
-		snap.PfxEntries = append(snap.PfxEntries, entry)
-	}
-	for _, ns := range neighbors {
-		if ns.Advert == nil {
-			continue
-		}
-		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr(), AdvertBoot: ns.AdvertBoot, AdvertSeq: ns.AdvertSeq}
-		for _, e := range ns.Advert.Entries {
-			if e.Destination == nil || e.NextHop == nil {
-				continue
-			}
-			sn.Entries = append(sn.Entries, RouterSnapshotNeighborEntry{
-				Dest:      e.Destination.Name.TlvStr(),
-				NextHop:   e.NextHop.Name.TlvStr(),
-				Cost:      e.Cost,
-				OtherCost: e.OtherCost,
-			})
-		}
-		snap.Neighbors = append(snap.Neighbors, sn)
-	}
-	if dv.pfx != nil && dv.pfx.pfxSvs != nil {
-		if wire := dv.pfx.pfxSvs.ExportInstanceState(); len(wire) > 0 {
-			snap.PfxSvsState = wire.Join()
-		}
-	}
-	return snap
-}
-
-// ImportSnapshot restores DV state from a RouterSnapshot.
-// Must be called after Init() and before the first heartbeat tick.
-func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
-	dv.mutex.Lock()
-	// Restore RIB rows as fallback for neighbors without exported adverts.
-	for _, r := range snap.Rib {
-		dest, err := enc.NameFromTlvStr(r.Dest)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad dest name %q: %w", r.Dest, err)
-		}
-		nh, err := enc.NameFromTlvStr(r.NextHop)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad next-hop name %q: %w", r.NextHop, err)
-		}
-		dv.rib.Set(dest, nh, r.Cost)
-	}
-	// Restore FIB.
-	fibRowMap := make(map[string][]table.FibEntry)
-	for _, f := range snap.Fib {
-		fibRowMap[f.Prefix] = append(fibRowMap[f.Prefix], table.FibEntry{FaceId: f.FaceId, Cost: f.Cost})
-	}
-	for prefixStr, entries := range fibRowMap {
-		name, err := enc.NameFromTlvStr(prefixStr)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad fib prefix %q: %w", prefixStr, err)
-		}
-		dv.fib.Update(name, entries)
-	}
-	// Restore prefix egress state entries.
-	pfxEntries := make([]table.PrefixSnapshotEntry, 0, len(snap.PfxEntries))
-	for _, e := range snap.PfxEntries {
-		router, err := enc.NameFromTlvStr(e.Router)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad pfx router name %q: %w", e.Router, err)
-		}
-		name, err := enc.NameFromTlvStr(e.Name)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad pfx name %q: %w", e.Name, err)
-		}
-		entry := table.PrefixSnapshotEntry{
-			Router:    router,
-			Name:      name,
-			Multicast: e.Multicast,
-		}
-		for _, nh := range e.NextHops {
-			entry.NextHops = append(entry.NextHops, table.PrefixNextHop{Face: nh.Face, Cost: nh.Cost})
-		}
-		pfxEntries = append(pfxEntries, entry)
-	}
-	dv.mutex.Unlock()
-	dv.pfx.RestorePfxEntries(pfxEntries)
-	if len(snap.PfxSvsState) > 0 {
-		if err := dv.pfx.pfxSvs.ImportInstanceState(enc.Wire{snap.PfxSvsState}); err != nil {
-			log.Warn(dv, "ImportSnapshot: pfxSvs state restore failed", "err", err)
-		}
-	}
-
-	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
-	for _, sn := range snap.Neighbors {
-		name, err := enc.NameFromTlvStr(sn.Name)
-		if err != nil {
-			continue
-		}
-		advert := &tlv.Advertisement{}
-		for _, e := range sn.Entries {
-			dest, err2 := enc.NameFromTlvStr(e.Dest)
-			if err2 != nil {
-				continue
-			}
-			nh, err2 := enc.NameFromTlvStr(e.NextHop)
-			if err2 != nil {
-				continue
-			}
-			advert.Entries = append(advert.Entries, &tlv.AdvEntry{
-				Destination: &tlv.Destination{Name: dest},
-				NextHop:     &tlv.Destination{Name: nh},
-				Cost:        e.Cost,
-				OtherCost:   e.OtherCost,
-			})
-		}
-		dv.mutex.Lock()
-		realNs := dv.neighbors.Add(name)
-		realNs.Advert = advert
-		realNs.AdvertBoot = sn.AdvertBoot
-		realNs.AdvertSeq = sn.AdvertSeq
-		dv.mutex.Unlock()
-		dv.updateRib(realNs)
-	}
-
-	// Install all restored PES entries to PET.
-	// After ImportInstanceState, the SVS considers restored publications as
-	// already-seen (Latest seqnos are restored), so SubscribePublisher callbacks
-	// will NOT fire for them. We must directly install to PET here.
-	selfName := dv.config.RouterName().TlvStr()
-	dv.mutex.Lock()
-	for _, pfxEntry := range dv.pfx.SnapshotEntries() {
-		routerName := pfxEntry.Router.TlvStr()
-		if routerName == selfName {
-			continue // skip self
-		}
-		routerHash := pfxEntry.Router.Hash()
-		_, alreadySubscribed := dv.pfx.pfxSubs[routerHash]
-		if alreadySubscribed {
-			// Already subscribed (from stage-1 or from running startPfxOnce
-			// before ImportSnapshot). Just install to PET if needed.
-			if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
-				route := dv.pfx.pfxGroup.Append(pfxEntry.Router...)
-				dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
-					Module:  "pet",
-					Cmd:     "add-egress",
-					Args:    &mgmt.ControlArgs{Name: route, Egress: &mgmt.EgressRecord{Name: pfxEntry.Router.Clone()}},
-					Retries: -1,
-				})
-			}
-			continue
-		}
-		// New subscription: add to pfxSeen/pfxSubs and install to PET.
-		dv.pfx.pfxSeen[routerHash] = pfxEntry.Router.Clone()
-		dv.pfx.pfxSubs[routerHash] = pfxEntry.Router.Clone()
-		if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
-			route := dv.pfx.pfxGroup.Append(pfxEntry.Router...)
-			dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
-				Module:  "pet",
-				Cmd:     "add-egress",
-				Args:    &mgmt.ControlArgs{Name: route, Egress: &mgmt.EgressRecord{Name: pfxEntry.Router.Clone()}},
-				Retries: -1,
-			})
-		}
-		// Subscribe to receive future PES updates from this router.
-		err := dv.pfx.pfxSvs.SubscribePublisher(pfxEntry.Router, func(sp ndn_sync.SvsPub) {
-			_ndndsim.NdndsimRecordPfxSvsDelivery()
-			dv.pfx.mu.Lock()
-			_, petOps := dv.pfx.processUpdate(sp.Content)
-			dv.pfx.mu.Unlock()
-			dv.pfx.applyPetOps(petOps)
-		})
-		if err != nil {
-			delete(dv.pfx.pfxSubs, routerHash)
-			log.Warn(dv.pfx, "ImportSnapshot: failed to subscribe to PES router", "router", pfxEntry.Router, "err", err)
-		}
-	}
-	dv.mutex.Unlock()
-
-	// Start pfxSvs immediately since the snapshot represents already-converged
-	// routing state. Unlike fresh startup (where debouncing prevents broadcast
-	// storms before nexthops exist), an imported snapshot already has RIB/FIB
-	// entries installed, so there's no storm risk.
-	// Cancel any pending startPfxOnce timer first to prevent double-start.
-	if cancel, ok := _pfxCancel.Load(dv); ok {
-		cancel.(func())()
-		_pfxCancel.Delete(dv)
-	}
-	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
-		if dv.pfx != nil && dv.pfx.pfxSvs != nil {
-			dv.pfx.pfxSvs.Start()
-		}
-		// Note: do NOT call startFaceEvents() here. The face event history is
-		// not available at ImportSnapshot time (before simulation starts), so
-		// calling it would only fetch a partial/incomplete set of faces.
-		// The face events will be processed naturally when DV convergence
-		// triggers startPfxOnce later. Similarly, prefix prune runs on its own
-		// timer and doesn't need to be started explicitly.
-	}
-
-	return nil
 }
 
 // NumPendingFetchInterests returns the total number of in-flight data fetch
@@ -999,6 +707,116 @@ func applySvsAloInitialStatePatch(file *ast.File, fset *token.FileSet) bool {
 	return false
 }
 
+// applySvsAloOnSvsUpdatePatch patches std/sync/svs_alo.go
+// to skip triggering fetches when a newly discovered publisher has Latest=1
+// (seqNo=1 from snapshot that wasn't in the restored state).
+func applySvsAloOnSvsUpdatePatch(file *ast.File) bool {
+	// No-op: the actual fix is in applySvsAloConsumeCheckPatch
+	return true
+}
+
+// applySvsAloConsumeCheckPatch patches std/sync/svs_alo_data.go.
+// After "fstate := entry.Value" inside the for loop, inserts:
+//
+//	if fstate.Known == 0 && fstate.Latest <= 1 {
+//		continue
+//	}
+//
+// This prevents consumeCheck from trying to fetch publishers that were added
+// to state via onSvsUpdate but weren't in the snapshot (parseInstanceState skips
+// seqNo=0 entries). The sync may report Latest=1, but we shouldn't fetch seq=1
+// until we've successfully received it once (Known > 0). This avoids the
+// "retries exhausted, segment number=0" error when a new publisher joins.
+func applySvsAloConsumeCheckPatch(file *ast.File) bool {
+	// Find consumeCheck function
+	var consumeCheckFunc *ast.FuncDecl
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Name.Name != "consumeCheck" {
+			continue
+		}
+		consumeCheckFunc = funcDecl
+		break
+	}
+	if consumeCheckFunc == nil {
+		return false
+	}
+
+	// Find: fstate := entry.Value inside a for range loop
+	var parentRange *ast.RangeStmt
+	var fstateAssignIdx int
+
+	for _, stmt := range consumeCheckFunc.Body.List {
+		rangeStmt, ok := stmt.(*ast.RangeStmt)
+		if !ok {
+			continue
+		}
+		for i, s := range rangeStmt.Body.List {
+			assign, ok := s.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				continue
+			}
+			if len(assign.Lhs) == 1 && len(assign.Rhs) == 1 {
+				ident, ok := assign.Lhs[0].(*ast.Ident)
+				if !ok || ident.Name != "fstate" {
+					continue
+				}
+				sel, ok := assign.Rhs[0].(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				ident2, ok := sel.X.(*ast.Ident)
+				if !ok || ident2.Name != "entry" || sel.Sel.Name != "Value" {
+					continue
+				}
+				parentRange = rangeStmt
+				fstateAssignIdx = i
+				goto insert
+			}
+		}
+	}
+	return false
+
+insert:
+	// Insert guard after fstate := entry.Value in the for loop body.
+	// Skip fetch when Known=0 AND Latest<=1. Known=0 means we haven't received
+	// anything from this publisher. If Latest=1, the sync said seq=1 exists
+	// but parseInstanceState skipped it (seqNo=0 entries not in snapshot).
+	// In that case, we should not try to fetch seq=1 either - wait for the
+	// publisher to re-advertise it after the next publish.
+	guard := &ast.IfStmt{
+		Cond: &ast.BinaryExpr{
+			X: &ast.BinaryExpr{
+				X: &ast.SelectorExpr{
+					X:   ast.NewIdent("fstate"),
+					Sel: ast.NewIdent("Known"),
+				},
+				Op: token.EQL,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+			},
+			Op: token.LAND,
+			Y: &ast.BinaryExpr{
+				X: &ast.SelectorExpr{
+					X:   ast.NewIdent("fstate"),
+					Sel: ast.NewIdent("Latest"),
+				},
+				Op: token.LEQ,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+			},
+		},
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{&ast.BranchStmt{Tok: token.CONTINUE}},
+		},
+	}
+
+	newList := make([]ast.Stmt, len(parentRange.Body.List)+1)
+	copy(newList[:fstateAssignIdx+1], parentRange.Body.List[:fstateAssignIdx+1])
+	newList[fstateAssignIdx+1] = guard
+	copy(newList[fstateAssignIdx+2:], parentRange.Body.List[fstateAssignIdx+1:])
+	parentRange.Body.List = newList
+	return true
+}
+
 // svsAloSimSnippet is injected into std/sync/svs_alo.go.
 // Provides direct-delivery helpers that replace the channel-based run() loop
 // in simulation mode.  All types (SvsALO, SvsPub, enc.Name) are already
@@ -1077,14 +895,396 @@ func (s *SvsALO) ConsumeCheckForPublisherByString(name string) {
 }
 `
 
-func applySvsAloSimExtensions(file *ast.File, fset *token.FileSet) bool {
-	injectDecls(file, fset, svsAloSimSnippet)
+// applySvsAloSnapContentStruct patches std/sync/svs_alo.go to add snapContent field.
+func applySvsAloSnapContentStruct(file *ast.File, fset *token.FileSet) bool {
+	modified := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		typeSpec, ok := n.(*ast.TypeSpec)
+		if !ok || typeSpec.Name.Name != "SvsALO" {
+			return true
+		}
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			return true
+		}
+		// Check if snapContent already exists
+		for _, field := range structType.Fields.List {
+			if len(field.Names) > 0 && field.Names[0].Name == "snapContent" {
+				return false // already exists
+			}
+		}
+		// Add snapContent field
+		newField := &ast.Field{
+			Names: []*ast.Ident{ast.NewIdent("snapContent")},
+			Type: &ast.MapType{
+				Key:   ast.NewIdent("string"),
+				Value: &ast.MapType{
+					Key:   ast.NewIdent("uint64"),
+					Value: ast.NewIdent("enc.Wire"),
+				},
+			},
+		}
+		structType.Fields.List = append(structType.Fields.List, newField)
+		modified = true
+		return false
+	})
+	return modified
+}
+
+// svsAloSnapContentHelpersSnippet contains helper functions for snap content storage.
+const svsAloSnapContentHelpersSnippet = `
+// storeSnapContent stores content for snapshot persistence.
+func (s *SvsALO) storeSnapContent(node enc.Name, seq uint64, content enc.Wire) {
+	nodeHash := node.TlvStr()
+	if s.snapContent == nil {
+		s.snapContent = make(map[string]map[uint64]enc.Wire)
+	}
+	if s.snapContent[nodeHash] == nil {
+		s.snapContent[nodeHash] = make(map[uint64]enc.Wire)
+	}
+	s.snapContent[nodeHash][seq] = content
+}
+
+// initSnapContent initializes snapContent in NewSvsALO.
+func initSnapContent(s *SvsALO) {
+	s.snapContent = make(map[string]map[uint64]enc.Wire)
+}
+
+// encodeSnapContent encodes snapContent for persistence.
+// Format: [magic:4][count:4][{hashLen:1,hash:N][boot:8][seq:8][contentLen:4][content:M}]...
+func (s *SvsALO) encodeSnapContent() []byte {
+	var result []byte
+	result = append(result, 0xCA, 0xFE, 0xC0, 0xDE) // magic prefix
+
+	total := 0
+	for _, entries := range s.snapContent {
+		total += len(entries)
+	}
+	result = append(result,
+		byte(total>>24), byte(total>>16),
+		byte(total>>8), byte(total))
+
+	for nameHash, entries := range s.snapContent {
+		for seq, content := range entries {
+			boot := s.BootTime()
+			for _, entry := range s.state[nameHash] {
+				boot = entry.Boot
+				break
+			}
+			hashBytes := []byte(nameHash)
+			result = append(result, byte(len(hashBytes)))
+			result = append(result, hashBytes...)
+			result = append(result,
+				byte(boot>>56), byte(boot>>48), byte(boot>>40), byte(boot>>32),
+				byte(boot>>24), byte(boot>>16), byte(boot>>8), byte(boot))
+			result = append(result,
+				byte(seq>>56), byte(seq>>48), byte(seq>>40), byte(seq>>32),
+				byte(seq>>24), byte(seq>>16), byte(seq>>8), byte(seq))
+			// Flatten Wire ([][]byte) to single []byte
+			var contentBytes []byte
+			for _, b := range content {
+				contentBytes = append(contentBytes, b...)
+			}
+			result = append(result,
+				byte(len(contentBytes)>>24), byte(len(contentBytes)>>16),
+				byte(len(contentBytes)>>8), byte(len(contentBytes)))
+			result = append(result, contentBytes...)
+		}
+	}
+	return result
+}
+
+// decodeSnapContent decodes snapContent from wire and populates PendingPubs.
+func (s *SvsALO) decodeSnapContent(wire []byte) {
+	if len(wire) < 8 {
+		return
+	}
+	if wire[0] != 0xCA || wire[1] != 0xFE || wire[2] != 0xC0 || wire[3] != 0xDE {
+		return
+	}
+	offset := 4
+	count := uint32(wire[offset])<<24 | uint32(wire[offset+1])<<16 |
+		uint32(wire[offset+2])<<8 | uint32(wire[offset+3])
+	offset += 4
+
+	s.snapContent = make(map[string]map[uint64]enc.Wire)
+
+	for i := uint32(0); i < count && offset < len(wire); i++ {
+		hashLen := int(wire[offset])
+		offset++
+		if offset+hashLen > len(wire) {
+			break
+		}
+		nameHash := string(wire[offset : offset+hashLen])
+		offset += hashLen
+		if offset+8 > len(wire) {
+			break
+		}
+		boot := uint64(wire[offset])<<56 | uint64(wire[offset+1])<<48 |
+			uint64(wire[offset+2])<<40 | uint64(wire[offset+3])<<32 |
+			uint64(wire[offset+4])<<24 | uint64(wire[offset+5])<<16 |
+			uint64(wire[offset+6])<<8 | uint64(wire[offset+7])
+		offset += 8
+		if offset+8 > len(wire) {
+			break
+		}
+		seq := uint64(wire[offset])<<56 | uint64(wire[offset+1])<<48 |
+			uint64(wire[offset+2])<<40 | uint64(wire[offset+3])<<32 |
+			uint64(wire[offset+4])<<24 | uint64(wire[offset+5])<<16 |
+			uint64(wire[offset+6])<<8 | uint64(wire[offset+7])
+		offset += 8
+		if offset+4 > len(wire) {
+			break
+		}
+		contentLen := uint32(wire[offset])<<24 | uint32(wire[offset+1])<<16 |
+			uint32(wire[offset+2])<<8 | uint32(wire[offset+3])
+		offset += 4
+		if offset+int(contentLen) > len(wire) {
+			break
+		}
+		// Convert []byte to enc.Wire ([][]byte) - single buffer
+		content := enc.Wire{wire[offset : offset+int(contentLen)]}
+		offset += int(contentLen)
+
+		if s.snapContent[nameHash] == nil {
+			s.snapContent[nameHash] = make(map[uint64]enc.Wire)
+		}
+		s.snapContent[nameHash][seq] = content
+
+		// Populate PendingPubs for immediate delivery
+		entry := s.state.Get(nameHash, boot)
+		if entry.PendingPubs == nil {
+			entry.PendingPubs = make(map[uint64]SvsPub)
+		}
+		entry.PendingPubs[seq] = SvsPub{
+			Content:  content,
+			BootTime: boot,
+			SeqNum:   seq,
+		}
+		s.state.Set(nameHash, boot, entry)
+	}
+}
+`
+
+// applySvsAloSnapContentHelpers injects the helper functions.
+func applySvsAloSnapContentHelpers(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, svsAloSnapContentHelpersSnippet)
+	return true
+}
+
+// applySvsAloSnapContentInit patches NewSvsALO to call initSnapContent.
+func applySvsAloSnapContentInit(file *ast.File, fset *token.FileSet) bool {
+	modified := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		funcDecl, ok := n.(*ast.FuncDecl)
+		if !ok || funcDecl.Name.Name != "NewSvsALO" {
+			return true
+		}
+		// Find the s := &SvsALO{...} assignment and add initSnapContent call after it
+		for i, stmt := range funcDecl.Body.List {
+			assign, ok := stmt.(*ast.AssignStmt)
+			if !ok || len(assign.Lhs) != 1 {
+				continue
+			}
+			// Look for "s := &SvsALO{"
+			ident, ok := assign.Lhs[0].(*ast.Ident)
+			if !ok || ident.Name != "s" {
+				continue
+			}
+			// Check RHS is a unary expr (&) containing a composite literal
+			unaryExpr, ok := assign.Rhs[0].(*ast.UnaryExpr)
+			if !ok || unaryExpr.Op != token.AND {
+				continue
+			}
+			compLit, ok := unaryExpr.X.(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			// Check it's SvsALO type (could be just &SvsALO or &SvsALO{...})
+			if len(compLit.Elts) == 0 {
+				// Empty composite literal, find closing } in source
+				continue
+			}
+			// Find the closing brace of the struct literal
+			// The statement ends at the closing }
+			// Add initSnapContent call after this statement
+			callStmt := &ast.ExprStmt{
+				X: &ast.CallExpr{
+					Fun: &ast.Ident{Name: "initSnapContent"},
+					Args: []ast.Expr{ast.NewIdent("s")},
+				},
+			}
+			newList := make([]ast.Stmt, len(funcDecl.Body.List)+1)
+			copy(newList[:i+1], funcDecl.Body.List[:i+1])
+			newList[i+1] = callStmt
+			copy(newList[i+2:], funcDecl.Body.List[i+1:])
+			funcDecl.Body.List = newList
+			modified = true
+			return false
+		}
+		return true
+	})
+	return modified
+}
+
+// applySvsAloStoreContentData patches produceObject in svs_alo_data.go to call storeSnapContent.
+func applySvsAloStoreContentData(file *ast.File, fset *token.FileSet) bool {
+	modified := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		funcDecl, ok := n.(*ast.FuncDecl)
+		if !ok || funcDecl.Name.Name != "produceObject" {
+			return true
+		}
+		// Find the s.state.Set(...) call and add storeSnapContent call after it
+		for i, stmt := range funcDecl.Body.List {
+			call, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			callExpr, ok := call.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			sel, ok := callExpr.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Set" {
+				continue
+			}
+			// Check it's s.state.Set(...)
+			recv, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || recv.Sel.Name != "state" {
+				continue
+			}
+			callStmt := &ast.ExprStmt{
+				X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent("s"),
+						Sel: ast.NewIdent("storeSnapContent"),
+					},
+					Args: []ast.Expr{
+						ast.NewIdent("node"),
+						ast.NewIdent("seq"),
+						ast.NewIdent("content"),
+					},
+				},
+			}
+			newList := make([]ast.Stmt, len(funcDecl.Body.List)+1)
+			copy(newList[:i+1], funcDecl.Body.List[:i+1])
+			newList[i+1] = callStmt
+			copy(newList[i+2:], funcDecl.Body.List[i+1:])
+			funcDecl.Body.List = newList
+			modified = true
+			return false
+		}
+		return true
+	})
+	return modified
+}
+
+// applySvsAloSnapContentState patches instanceState and parseInstanceState in place.
+func applySvsAloSnapContentState(file *ast.File, fset *token.FileSet) bool {
+	// Delete the old instanceState and parseInstanceState functions
+	var newDecls []ast.Decl
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if ok && (funcDecl.Name.Name == "instanceState" || funcDecl.Name.Name == "parseInstanceState") {
+			continue // skip these
+		}
+		newDecls = append(newDecls, decl)
+	}
+	file.Decls = newDecls
+
+	// Clear comments that might be associated with deleted functions
+	file.Comments = nil
+
+	// Now inject the new functions
+	injectDecls(file, fset, `
+func (s *SvsALO) instanceState() enc.Wire {
+	state := spec_svsps.InstanceState{
+		Name:          s.opts.Name,
+		BootstrapTime: s.BootTime(),
+		StateVector: s.state.Encode(func(state svsDataState) uint64 {
+			return state.Known
+		}),
+	}
+	_snapEncoded := state.Encode()
+	return append(_snapEncoded, enc.Wire{s.encodeSnapContent()}...)
+}
+
+func (s *SvsALO) parseInstanceState(wire enc.Wire) error {
+	// Flatten wire to find content boundary
+	var _snapWire []byte
+	for _, buf := range wire {
+		_snapWire = append(_snapWire, buf...)
+	}
+
+	// Find content start by magic marker, decode content if present
+	_snapContentStart := -1
+	for i := 0; i < len(_snapWire)-3; i++ {
+		if _snapWire[i] == 0xCA && _snapWire[i+1] == 0xFE && _snapWire[i+2] == 0xC0 && _snapWire[i+3] == 0xDE {
+			_snapContentStart = i
+			break
+		}
+	}
+
+	var _metaWire enc.Wire
+	if _snapContentStart >= 0 {
+		// Content is present - find buffer index for content start
+		_metaBufCount := 0
+		_byteAcc := 0
+		for bufIdx, buf := range wire {
+			if _byteAcc+len(buf) > _snapContentStart {
+				_metaBufCount = bufIdx
+				break
+			}
+			_byteAcc += len(buf)
+		}
+		_metaWire = wire[:_metaBufCount]
+		s.decodeSnapContent(_snapWire[_snapContentStart:])
+	} else {
+		// No content marker - parse entire wire as metadata
+		_metaWire = wire
+	}
+
+	initState, err := spec_svsps.ParseInstanceState(enc.NewWireView(_metaWire), true)
+	if err != nil {
+		return err
+	}
+
+	if !initState.Name.Equal(s.opts.Name) {
+		return fmt.Errorf("initial state name mismatch: %v != %v", initState.Name, s.opts.Name)
+	}
+
+	s.opts.Svs.BootTime = initState.BootstrapTime
+	s.opts.Svs.InitialState = initState.StateVector
+
+	for _, entry := range initState.StateVector.Entries {
+		hash := entry.Name.TlvStr()
+		for _, seqEntry := range entry.SeqNoEntries {
+			if seqEntry.SeqNo == 0 {
+				continue
+			}
+			s.state.Set(hash, seqEntry.BootstrapTime, svsDataState{
+				Known:   seqEntry.SeqNo,
+				Latest:  seqEntry.SeqNo,
+				Pending: seqEntry.SeqNo,
+			})
+		}
+	}
+
+	return nil
+}
+`)
 	return true
 }
 
 // applySvsChannels transforms channel operations in std/sync/svs.go:
 //   - s.recvSv <- sv  →  s.simRecvSv(sv)
 //   - s.stop <- struct{}{}  →  s.simStop()
+func applySvsAloSimExtensions(file *ast.File, fset *token.FileSet) bool {
+	injectDecls(file, fset, svsAloSimSnippet)
+	return true
+}
+
 func applySvsChannels(file *ast.File) bool {
 	modified := false
 	astutil.Apply(file, func(c *astutil.Cursor) bool {
@@ -1146,103 +1346,6 @@ func applySvsAloChannels(file *ast.File) bool {
 			modified = true
 		}
 		return true
-	}, nil)
-	return modified
-}
-
-// applySnapshotEvictionDisableInSim wraps the eviction block in takeSnap
-// (snapshot_node_latest.go) with:
-//
-//	if !_ndndsim.IsSynchronous() { ... }
-//
-// In synchronous sim mode, MemoryStore has unlimited capacity, so evicting old
-// publications is unnecessary.  Without this guard, takeSnap() calls
-// RemoveFlatRange to erase seqno=0..N-3*Threshold once seqNo >= 4*Threshold.
-// In the 3-stage scenario all prefix announcements happen at t=0 before any
-// consumer can fetch them, so the eviction races ahead and removes data objects
-// that consumers need, causing all fetches to time out with "retries exhausted".
-func applySnapshotEvictionDisableInSim(file *ast.File) bool {
-	modified := false
-	astutil.Apply(file, func(c *astutil.Cursor) bool {
-		ifStmt, ok := c.Node().(*ast.IfStmt)
-		if !ok || ifStmt.Init != nil {
-			return true
-		}
-		// Check if the body contains a RemoveFlatRange call.
-		containsEviction := false
-		ast.Inspect(ifStmt.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "RemoveFlatRange" {
-				containsEviction = true
-				return false
-			}
-			return true
-		})
-		if !containsEviction {
-			return true
-		}
-		// Wrap with: if !_ndndsim.IsSynchronous() { <original if> }
-		c.Replace(&ast.IfStmt{
-			Cond: &ast.UnaryExpr{
-				Op: token.NOT,
-				X: &ast.CallExpr{
-					Fun: &ast.SelectorExpr{
-						X:   ast.NewIdent("_ndndsim"),
-						Sel: ast.NewIdent("IsSynchronous"),
-					},
-				},
-			},
-			Body: &ast.BlockStmt{List: []ast.Stmt{ifStmt}},
-		})
-		modified = true
-		return false
-	}, nil)
-	return modified
-}
-
-// applySnapshotDisableInSim wraps the call s.opts.Snapshot.onUpdate(s.state, node)
-// inside consumeCheck with:
-//
-//	if !_ndndsim.IsSynchronous() { s.opts.Snapshot.onUpdate(s.state, node) }
-//
-// Without this guard, SnapshotNodeLatest.onUpdate sets SnapBlock=1 whenever
-// Known==0, preventing normal sequential PFS data fetching in the sim.  The
-// snapshot never arrives (no snapshot was produced), so SnapBlock stays 1
-// forever and consumeCheck can never make progress.
-func applySnapshotDisableInSim(file *ast.File) bool {
-	modified := false
-	astutil.Apply(file, func(c *astutil.Cursor) bool {
-		stmt, ok := c.Node().(*ast.ExprStmt)
-		if !ok {
-			return true
-		}
-		call, ok := stmt.X.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		// Match s.opts.Snapshot.onUpdate(...)
-		outer, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || outer.Sel.Name != "onUpdate" {
-			return true
-		}
-		// Wrap with: if !_ndndsim.IsSynchronous() { <original> }
-		c.Replace(&ast.IfStmt{
-			Cond: &ast.UnaryExpr{
-				Op: token.NOT,
-				X: &ast.CallExpr{
-					Fun: &ast.SelectorExpr{
-						X:   ast.NewIdent("_ndndsim"),
-						Sel: ast.NewIdent("IsSynchronous"),
-					},
-				},
-			},
-			Body: &ast.BlockStmt{List: []ast.Stmt{stmt}},
-		})
-		modified = true
-		return false
 	}, nil)
 	return modified
 }
@@ -1326,12 +1429,8 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippet)
 	// ndn_sync is not in the upstream router.go; needed for injected methods.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
-	// fmt, enc, table and tlv are needed for ExportSnapshot/ImportSnapshot.
-	astutil.AddImport(fset, file, "fmt")
+	// enc and log are needed by Init, LinkMulticastPrefixes, PrefixAnnounceCmd, PrefixWithdrawCmd.
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
-	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
-	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
-	// log is needed for ImportSnapshot warning.
 	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
 	return true
 }
@@ -1597,233 +1696,7 @@ func (dv *Router) startPfxOnce(_ int) {
 		dv.pfxSvs.Start()
 	}
 }
-
-// RouterSnapshotRibRow is a JSON-serialisable RIB row.
-type RouterSnapshotRibRow struct {
-	Dest    string ` + "`" + `json:"dest"` + "`" + `
-	NextHop string ` + "`" + `json:"next_hop"` + "`" + `
-	Cost    uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshotFibRow is a JSON-serialisable FIB row.
-type RouterSnapshotFibRow struct {
-	Prefix string ` + "`" + `json:"prefix"` + "`" + `
-	FaceId uint64 ` + "`" + `json:"face_id"` + "`" + `
-	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshotNeighborEntry is one entry in an exported neighbor advertisement.
-type RouterSnapshotNeighborEntry struct {
-	Dest      string ` + "`" + `json:"dest"` + "`" + `
-	NextHop   string ` + "`" + `json:"next_hop"` + "`" + `
-	Cost      uint64 ` + "`" + `json:"cost"` + "`" + `
-	OtherCost uint64 ` + "`" + `json:"other_cost"` + "`" + `
-}
-
-// RouterSnapshotNeighbor is a JSON-serialisable exported neighbor advert.
-type RouterSnapshotNeighbor struct {
-	Name       string                        ` + "`" + `json:"name"` + "`" + `
-	Entries    []RouterSnapshotNeighborEntry ` + "`" + `json:"entries"` + "`" + `
-	AdvertBoot uint64                        ` + "`" + `json:"advert_boot,omitempty"` + "`" + `
-	AdvertSeq  uint64                        ` + "`" + `json:"advert_seq,omitempty"` + "`" + `
-}
-
-// RouterSnapshotPfxEntry is a JSON-serialisable remote prefix entry.
-type RouterSnapshotPfxEntry struct {
-	Router string ` + "`" + `json:"router"` + "`" + `
-	Name   string ` + "`" + `json:"name"` + "`" + `
-	Cost   uint64 ` + "`" + `json:"cost"` + "`" + `
-}
-
-// RouterSnapshot is the full serialisable state of a Router instance.
-type RouterSnapshot struct {
-	Rib         []RouterSnapshotRibRow    ` + "`" + `json:"rib"` + "`" + `
-	Fib         []RouterSnapshotFibRow    ` + "`" + `json:"fib"` + "`" + `
-	Neighbors   []RouterSnapshotNeighbor  ` + "`" + `json:"neighbors"` + "`" + `
-	PfxSvsState []byte                    ` + "`" + `json:"pfx_svs_state,omitempty"` + "`" + `
-	PfxTable    []RouterSnapshotPfxEntry  ` + "`" + `json:"pfx_table,omitempty"` + "`" + `
-}
-
-// ExportSnapshot captures the current DV state into a RouterSnapshot.
-// Must be called after DV and prefix-SVS have converged.
-func (dv *Router) ExportSnapshot() RouterSnapshot {
-	dv.mutex.Lock()
-	ribRows := dv.rib.Snapshot()
-	fibRows := dv.fib.Snapshot()
-	neighbors := dv.neighbors.GetAll()
-	dv.mutex.Unlock()
-
-	snap := RouterSnapshot{}
-	for _, r := range ribRows {
-		snap.Rib = append(snap.Rib, RouterSnapshotRibRow{
-			Dest:    r.Dest.TlvStr(),
-			NextHop: r.NextHop.TlvStr(),
-			Cost:    r.Cost,
-		})
-	}
-	for _, f := range fibRows {
-		snap.Fib = append(snap.Fib, RouterSnapshotFibRow{
-			Prefix: f.Prefix.TlvStr(),
-			FaceId: f.FaceId,
-			Cost:   f.Cost,
-		})
-	}
-	for _, ns := range neighbors {
-		if ns.Advert == nil {
-			continue
-		}
-		sn := RouterSnapshotNeighbor{Name: ns.Name.TlvStr(), AdvertBoot: ns.AdvertBoot, AdvertSeq: ns.AdvertSeq}
-		for _, e := range ns.Advert.Entries {
-			if e.Destination == nil || e.NextHop == nil {
-				continue
-			}
-			sn.Entries = append(sn.Entries, RouterSnapshotNeighborEntry{
-				Dest:      e.Destination.Name.TlvStr(),
-				NextHop:   e.NextHop.Name.TlvStr(),
-				Cost:      e.Cost,
-				OtherCost: e.OtherCost,
-			})
-		}
-		snap.Neighbors = append(snap.Neighbors, sn)
-	}
-
-	// Export pfxSvs Known seqNos so Stage N+1 skips re-fetching already-seen data.
-	if wire := dv.pfxSvs.ExportInstanceState(); len(wire) > 0 {
-		snap.PfxSvsState = wire.Join()
-	}
-
-	// Export the prefix table for all remote routers visible in the RIB so
-	// Stage N+1 has an immediately-populated table without waiting for SVS sync.
-	selfName := dv.config.RouterName().TlvStr()
-	seen := make(map[string]bool)
-	for _, r := range snap.Rib {
-		if seen[r.Dest] || r.Dest == selfName {
-			continue
-		}
-		seen[r.Dest] = true
-		routerName, err := enc.NameFromTlvStr(r.Dest)
-		if err != nil {
-			continue
-		}
-		router := dv.pfx.GetRouter(routerName)
-		for _, entry := range router.Prefixes {
-			snap.PfxTable = append(snap.PfxTable, RouterSnapshotPfxEntry{
-				Router: r.Dest,
-				Name:   entry.Name.TlvStr(),
-				Cost:   entry.Cost,
-			})
-		}
-	}
-
-	return snap
-}
-
-// ImportSnapshot restores DV state from a RouterSnapshot.
-// Must be called after Init() and before the first heartbeat tick.
-func (dv *Router) ImportSnapshot(snap RouterSnapshot) error {
-	dv.mutex.Lock()
-	// Restore RIB rows as fallback for neighbors without exported adverts.
-	for _, r := range snap.Rib {
-		dest, err := enc.NameFromTlvStr(r.Dest)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad dest name %q: %w", r.Dest, err)
-		}
-		nh, err := enc.NameFromTlvStr(r.NextHop)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad next-hop name %q: %w", r.NextHop, err)
-		}
-		dv.rib.Set(dest, nh, r.Cost)
-	}
-	fibRowMap := make(map[string][]table.FibEntry)
-	for _, f := range snap.Fib {
-		fibRowMap[f.Prefix] = append(fibRowMap[f.Prefix], table.FibEntry{FaceId: f.FaceId, Cost: f.Cost})
-	}
-	for prefixStr, entries := range fibRowMap {
-		name, err := enc.NameFromTlvStr(prefixStr)
-		if err != nil {
-			dv.mutex.Unlock()
-			return fmt.Errorf("ImportSnapshot: bad fib prefix %q: %w", prefixStr, err)
-		}
-		dv.fib.Update(name, entries)
-	}
-
-	// Restore remote prefix table entries directly so Stage N+1 has a
-	// fully-populated prefix table without waiting for SVS re-sync.
-	for _, pe := range snap.PfxTable {
-		routerName, err := enc.NameFromTlvStr(pe.Router)
-		if err != nil {
-			continue
-		}
-		prefixName, err := enc.NameFromTlvStr(pe.Name)
-		if err != nil {
-			continue
-		}
-		router := dv.pfx.GetRouter(routerName)
-		router.Prefixes[prefixName.TlvStr()] = &table.PrefixEntry{
-			Name: prefixName,
-			Cost: pe.Cost,
-		}
-	}
-
-	dv.mutex.Unlock()
-
-	// Restore pfxSvs Known state before SubscribePublisher triggers consumeCheck,
-	// so that it sees Pending == Known == Latest and skips re-fetching stage-1 data.
-	if len(snap.PfxSvsState) > 0 {
-		if err := dv.pfxSvs.ImportInstanceState(enc.Wire{snap.PfxSvsState}); err != nil {
-			log.Warn(dv, "ImportSnapshot: pfxSvs state restore failed", "err", err)
-		}
-		// After restoring SVS state, trigger consumeCheck for all known publishers
-		// to start fetching the prefix data that was in the snapshot.
-		for name := range dv.pfxSvs.GetAllPublishers() {
-			dv.pfxSvs.ConsumeCheckForPublisherByString(name)
-		}
-	}
-
-	// Rebuild RIB from exported neighbor adverts via DV's own updateRib logic.
-	// This ensures that when the first real heartbeat arrives from each neighbor,
-	// DirtyResetNextHop + re-add produces the same result as stage-1: no routes
-	// are lost regardless of timing. Neighbors without exported adverts retain
-	// their routes from the rib rows restored above.
-	for _, sn := range snap.Neighbors {
-		name, err := enc.NameFromTlvStr(sn.Name)
-		if err != nil {
-			continue
-		}
-		advert := &tlv.Advertisement{}
-		for _, e := range sn.Entries {
-			dest, err2 := enc.NameFromTlvStr(e.Dest)
-			if err2 != nil {
-				continue
-			}
-			nh, err2 := enc.NameFromTlvStr(e.NextHop)
-			if err2 != nil {
-				continue
-			}
-			advert.Entries = append(advert.Entries, &tlv.AdvEntry{
-				Destination: &tlv.Destination{Name: dest},
-				NextHop:     &tlv.Destination{Name: nh},
-				Cost:        e.Cost,
-				OtherCost:   e.OtherCost,
-			})
-		}
-		dv.mutex.Lock()
-		realNs := dv.neighbors.Add(name)
-		realNs.Advert = advert
-		realNs.AdvertBoot = sn.AdvertBoot
-		realNs.AdvertSeq = sn.AdvertSeq
-		dv.mutex.Unlock()
-		dv.updateRib(realNs)
-	}
-
-	dv.updatePrefixSubs()
-	return nil
-}`
-
-// ---------------------------------------------------------------------------
-// Onephase injection functions
+`
 // ---------------------------------------------------------------------------
 
 func applyFibStrategyTreeExtensionsOp(file *ast.File, fset *token.FileSet) bool {
@@ -1846,11 +1719,7 @@ func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippetOp)
 	// ndn_sync already imported at 51774b8; addNamedImport is idempotent.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
-	// fmt, enc, table, tlv, and log needed for ExportSnapshot/ImportSnapshot.
-	astutil.AddImport(fset, file, "fmt")
+	// enc is needed by LinkMulticastPrefixes.
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
-	addNamedImport(file, "table", "github.com/named-data/ndnd/dv/table")
-	addNamedImport(file, "tlv", "github.com/named-data/ndnd/dv/tlv")
-	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
 	return true
 }

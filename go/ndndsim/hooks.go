@@ -279,9 +279,9 @@ func IsSynchronous() bool {
 // Empirically the production default of 10 throttles convergence on large
 // topologies / high prefix counts.  An unlimited pipeline causes Interest
 // bursts that overflow link queues (queue_size=100) when many objects must be
-// fetched from a single publisher in stage2 (post-snapshot announce), causing
-// retry exhaustion and permanent data loss.  20 is a balance: 2× faster than
-// default, well under typical queue capacity.
+// fetched from a single publisher after a large burst of prefix announcements,
+// causing retry exhaustion and permanent data loss.  20 is a balance: 2× faster
+// than default, well under typical queue capacity.
 // In production the default (0 → 10) applies.
 //
 // Override at runtime with the NDNDSIM_SVS_PIPELINE env var (simulation only).

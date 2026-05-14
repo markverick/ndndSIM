@@ -168,17 +168,6 @@ func (sd *SimDvRouter) Router() *dv.Router {
 	return sd.router
 }
 
-// ImportSnapshot restores a router snapshot inside withNodeFib so that
-// nfdc commands issued during FIB restoration run synchronously and are
-// immediately installed in the NS-3 forwarder.
-func (sd *SimDvRouter) ImportSnapshot(snap dv.RouterSnapshot) error {
-	var importErr error
-	sd.fwd.withNodeFib(func() {
-		importErr = sd.router.ImportSnapshot(snap)
-	})
-	return importErr
-}
-
 func (sd *SimDvRouter) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	return sd.router.PrefixSyncSuppressionStats()
 }

@@ -41,9 +41,6 @@ ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
 rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() to postUpdateRib
 rulePrefixEventHooks                          // dv/table prefix announce/add hooks for convergence metrics
-ruleSnapGraceGuard                            // dv/dv/table_algo.go: guard UnsubscribePublisher with _snapGraceActive check
-	ruleSnapGraceFibGuard                         // dv/dv/table_algo.go: guard dv.fib.RemoveUnmarked() with _snapGraceActive check
-	ruleSnapGraceRibPruneGuard                    // dv/dv/table_algo.go: guard dv.rib.DirtyResetNextHop() in updateRib() with _snapGraceActive check
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)
 ruleInjectFibHashTableExtensions      // fw/table/fib-strategy-hashtable.go
@@ -53,9 +50,14 @@ ruleInjectSvsSimExtensions            // std/sync/svs.go
 ruleSvsDeterministicRng               // std/sync/svs.go: per-instance seeded RNG
 ruleInjectSvsAloSimExtensions         // std/sync/svs_alo.go
 ruleSvsAloInitialStatePatch            // std/sync/svs_alo_initial_state.go: skip seqNo=0
+ruleSvsAloOnSvsUpdatePatch            // std/sync/svs_alo.go: skip fetch for newly discovered publishers
+ruleSvsAloConsumeCheckPatch           // std/sync/svs_alo_data.go: guard against Known=0/Latest=1
 ruleSvsChannels                       // std/sync/svs.go: recvSv/stop sends → sim methods
 ruleSvsAloChannels                    // std/sync/svs_alo.go: stop/publpipe sends → sim methods
 ruleInjectSvsAloDataChannels          // std/sync/svs_alo_data.go: outpipe/errpipe sends
+ruleSvsAloSnapContent                // std/sync/svs_alo.go: store/restore content in snapshots
+ruleSvsAloSnapContentData            // std/sync/svs_alo_data.go: store content in produceObject
+ruleSvsAloSnapContentState          // std/sync/svs_alo_initial_state.go: encode/decode content in snapshots
 ruleInjectThreadSimExtensions         // fw/fw/thread.go (twophase: includes simPet)
 ruleInjectNfdcSimExtensions           // dv/nfdc/nfdc.go  (needs _ndndsim import)
 ruleInjectPrefixSimExtensions         // dv/dv/prefix.go
@@ -63,18 +65,14 @@ ruleInjectRouterSimExtensions         // dv/dv/router.go (twophase: pfx.Start)
 ruleSvsALOMaxPipelineSim              // dv/dv/prefix.go (twophase) + dv/dv/router.go (onephase)
 ruleDvAdvReceiptCallback              // dv/dv/advert_data.go: stamp in-flight DV adv receipts
 rulePfxSvsDeliveryCallback           // dv/dv/prefix.go: stamp in-flight prefix SVS deliveries
-	rulePfxSvsDeliveryCallbackOp        // dv/dv/table_algo.go (onephase): stamp in-flight prefix SVS deliveries
-	rulePfxSvsDeliveryCallbackInApplyOp // dv/table/prefix_table.go (onephase): stamp in-flight prefix SVS deliveries in Apply
-	ruleSnapPfxDeliveryStamp          // dv/dv/router.go (onephase): stamp pfx delivery after snapshot import
+rulePfxSvsDeliveryCallbackOp        // dv/dv/table_algo.go (onephase): stamp in-flight prefix SVS deliveries
+rulePfxSvsDeliveryCallbackInApplyOp // dv/table/prefix_table.go (onephase): stamp in-flight prefix SVS deliveries in Apply
 
 // Onephase variants (named-data/ndnd@main@51774b8: no PET, no prefix.go,
 // no MulticastStrategyTable, different router.go pfxSvs API).
 ruleInjectFibStrategyTreeExtensionsOp // fw/table/fib-strategy-tree.go (onephase)
 ruleInjectThreadSimExtensionsOp       // fw/fw/thread.go (onephase: no simPet/simMulticastFib)
 ruleInjectRouterSimExtensionsOp       // dv/dv/router.go (onephase: pfxSvs.Start)
-	ruleDisablePfxSvsSnapshot             // dv/dv/router.go (onephase): SnapshotNodeLatest → SnapshotNull
-	ruleSnapshotDisableInSim              // std/sync/svs_alo_data.go: skip onUpdate in sim
-	ruleSnapshotEvictionDisableInSim      // std/sync/snapshot_node_latest.go: skip RemoveFlatRange eviction in sim
 )
 
 // targetRewrites returns the full set of package-level rewrite descriptors.
@@ -114,7 +112,7 @@ pkg("dv/table", map[string][]fileRule{
 }),
 pkg("dv/dv", map[string][]fileRule{
 		"table_algo.go":  {rulePostUpdateRibConvergenceHook, rulePfxSvsDeliveryCallbackOp},
-		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleDisablePfxSvsSnapshot, ruleSvsALOMaxPipelineSim, ruleSnapPfxDeliveryStamp},
+		"router.go":      {ruleKeychainNewKeyChain, ruleInjectRouterSimExtensionsOp, ruleSvsALOMaxPipelineSim},
 		"advert_data.go": {ruleDvAdvReceiptCallback},
 	}),
 pkg("dv/nfdc", map[string][]fileRule{
@@ -122,9 +120,9 @@ pkg("dv/nfdc", map[string][]fileRule{
 }),
 pkg("std/sync", map[string][]fileRule{
 "svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
-"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
-"svs_alo_data.go":         {ruleInjectSvsAloDataChannels},
-		"snapshot_node_latest.go": {ruleSnapshotEvictionDisableInSim},
+"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions, ruleSvsAloSnapContent},
+"svs_alo_initial_state.go": {ruleSvsAloInitialStatePatch, ruleSvsAloSnapContentState},
+"svs_alo_data.go":         {ruleInjectSvsAloDataChannels, ruleSvsAloSnapContentData},
 }),
 }
 }
@@ -166,10 +164,9 @@ pkg("dv/nfdc", map[string][]fileRule{
 // std/sync: eliminate goroutines via direct-delivery sim helpers.
 	pkg("std/sync", map[string][]fileRule{
 		"svs.go":          {ruleSimTicker, ruleSvsDeterministicRng, ruleInjectSvsSimExtensions, ruleSvsChannels},
-		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions},
-		"svs_alo_initial_state.go": {ruleSvsAloInitialStatePatch},
-			"svs_alo_data.go":         {ruleInjectSvsAloDataChannels, ruleSnapshotDisableInSim},
-			"snapshot_node_latest.go": {ruleSnapshotEvictionDisableInSim},
+		"svs_alo.go":      {ruleSvsAloChannels, ruleInjectSvsAloSimExtensions, ruleSvsAloOnSvsUpdatePatch, ruleSvsAloSnapContent},
+		"svs_alo_initial_state.go": {ruleSvsAloInitialStatePatch, ruleSvsAloSnapContentState},
+			"svs_alo_data.go":         {ruleInjectSvsAloDataChannels, ruleSvsAloConsumeCheckPatch, ruleSvsAloSnapContentData},
 }),
 }
 }
@@ -287,28 +284,28 @@ modified = applySvsSimExtensions(file, fset) || modified
 		case ruleSvsAloInitialStatePatch:
 			modified = applySvsAloInitialStatePatch(file, fset) || modified
 
+		case ruleSvsAloOnSvsUpdatePatch:
+			modified = applySvsAloOnSvsUpdatePatch(file) || modified
+
+		case ruleSvsAloConsumeCheckPatch:
+			// Disabled: guard breaks normal operation. Content storage should be the real fix.
+			// modified = applySvsAloConsumeCheckPatch(file) || modified
+
 		case ruleInjectSvsAloDataChannels:
 			modified = applySvsAloDataChannels(file) || modified
 
-		case ruleSnapshotDisableInSim:
-			// Wrap s.opts.Snapshot.onUpdate(...) with if !_ndndsim.IsSynchronous()
-			// to disable the snapshot strategy in sim mode.  Without this,
-			// SnapshotNodeLatest.onUpdate sets SnapBlock=1 on every consumeCheck
-			// call when Known==0, blocking normal sequential fetching forever.
-			if applySnapshotDisableInSim(file) {
-				modified = true
-				ndndsimUsed = true
-			}
+		case ruleSvsAloSnapContentData:
+			modified = applySvsAloStoreContentData(file, fset) || modified
 
-		case ruleSnapshotEvictionDisableInSim:
-			// Wrap the RemoveFlatRange eviction block in takeSnap with
-			// if !_ndndsim.IsSynchronous() so it is skipped in sim mode.
-			// MemoryStore has unlimited capacity; eviction is not needed and
-			// breaks the 3-stage scenario where all announcements happen at t=0.
-			if applySnapshotEvictionDisableInSim(file) {
-				modified = true
-				ndndsimUsed = true
-			}
+		case ruleSvsAloSnapContentState:
+			modified = applySvsAloSnapContentState(file, fset) || modified
+
+		case ruleSvsAloSnapContent:
+			modified = applySvsAloSnapContentStruct(file, fset) || modified
+			modified = applySvsAloSnapContentHelpers(file, fset) || modified
+			modified = applySvsAloSnapContentInit(file, fset) || modified
+
+
 
 		case ruleInjectThreadSimExtensions:
 // _ndndsim, defn, table already in thread.go; sync added inside.
@@ -358,12 +355,6 @@ modified = true
 ndndsimUsed = true
 }
 
-case ruleSnapPfxDeliveryStamp:
-// Inject ndndsim.NdndsimRecordPfxSvsDelivery() after snapshot prefix table import.
-if applySnapPfxDeliveryStamp(file) {
-modified = true
-ndndsimUsed = true
-}
 
 // --- Onephase code-injection rules ---
 
@@ -379,22 +370,6 @@ case ruleInjectRouterSimExtensionsOp:
 // Onephase: uses pfxSvs.Start/Stop instead of pfx.Start/Stop.
 modified = applyRouterSimExtensionsOp(file, fset) || modified
 
-		case ruleDisablePfxSvsSnapshot:
-			// Onephase: replace SnapshotNodeLatest with SnapshotNull in
-			// createPrefixTable so the SVS-internal snapshot is fully disabled.
-			// The sim uses its own stage1→snap→stage2 mechanism instead.
-			modified = applyDisablePfxSvsSnapshot(file) || modified
-
-		case ruleSvsALOMaxPipelineSim:
-			// Both phases: inject MaxPipelineSize: _ndndsim.SvsMaxPipelineSize()
-			// into the SvsAloOpts used for prefix sync so all objects are fetched
-			// in a single RTT batch during simulation.
-			// _ndndsim is already imported in both prefix.go (twophase) and
-			// router.go (onephase) by the global go→_ndndsim.Go rewrite.
-			if applySetSvsALOMaxPipeline(file) {
-				modified = true
-				ndndsimUsed = true
-			}
 		}
 	}
 
