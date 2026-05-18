@@ -291,6 +291,13 @@ func (fwd *SimForwarder) RemoveRouteWithOrigin(name enc.Name, faceID uint64, ori
 	})
 }
 
+// AddMulticastEgress adds a multicast egress to the PET for a prefix.
+// The egressName is used to look up the face ID from the RIB.
+// In twophase this installs a PET egress; in onephase this is a no-op.
+func (fwd *SimForwarder) AddMulticastEgress(prefix enc.Name, egressName enc.Name, multicast bool) {
+	addSimPetEgress(fwd.pet, prefix, egressName, multicast)
+}
+
 // --- Packet processing ---
 
 // ReceivePacket is the main entry point for packets arriving from ns-3.

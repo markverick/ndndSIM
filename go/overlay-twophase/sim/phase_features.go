@@ -35,6 +35,12 @@ func removeSimPetNextHop(pet any, name enc.Name, faceID uint64) {
 	pet.(*table.PrefixEgressTable).RemoveNextHopEnc(name, faceID)
 }
 
+// addSimPetEgress adds an egress entry to the PET for multicast forwarding.
+// The egress name is used to look up the face ID from the RIB.
+func addSimPetEgress(pet any, name enc.Name, egressName enc.Name, multicast bool) {
+	pet.(*table.PrefixEgressTable).AddEgressEnc(name, egressName, multicast)
+}
+
 func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
 	addSimPetNextHop(fwd.pet, defn.LOCAL_PREFIX, faceID, 0)
 }

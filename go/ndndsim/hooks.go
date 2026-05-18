@@ -42,7 +42,7 @@ type NodeHooks struct {
 	// to avoid an import cycle).  nil → use global FibStrategyTable.
 	Fib interface{}
 
-	// Pet is the per-node Prefix Egress Table (*fw/table.PrefixEgressTable).
+	// Pet is the per-node Prefix Egress Table (*fw/table.PrefixEgressTable). Note: this is the forwarder's PET, not the PSD prefix state.
 	// nil → use global Pet.
 	Pet interface{}
 

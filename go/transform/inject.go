@@ -479,8 +479,8 @@ func (dv *Router) Init() error {
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Prefix state starts empty in simulation. Do not publish an initial reset:
-	// synthetic one-prefix runs must not count prefix-sync bootstrap traffic.
+	// Initialise prefix egress state (table only; SVS not yet started).
+	dv.pfx.Reset()
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
 	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
@@ -1682,8 +1682,8 @@ func (dv *Router) Init() error {
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Prefix state starts empty in simulation. Do not publish an initial reset:
-	// synthetic one-prefix runs must not count prefix-sync bootstrap traffic.
+	// Initialise prefix egress state (table only; SVS not yet started).
+	dv.pfx.Reset()
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
 	// are executed synchronously via simExec (ruleNfdcChannelSend transform).

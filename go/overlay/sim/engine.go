@@ -194,6 +194,7 @@ func (e *SimEngine) DispatchInterest(interest *ndn.EncodedInterest) {
 // Express sends an Interest and optionally tracks a callback for the reply.
 // If callback is nil, the Interest is fire-and-forget (e.g., Sync Interests).
 func (e *SimEngine) Express(interest *ndn.EncodedInterest, callback ndn.ExpressCallbackFunc) error {
+	log.Info(e, "DEBUG: Express called", "name", interest.FinalName, "hasCallback", callback != nil)
 	if !e.running.Load() || !e.face.IsRunning() {
 		return ndn.ErrFaceDown
 	}

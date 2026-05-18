@@ -39,7 +39,7 @@ ruleSimTicker                                 // *time.Ticker field → *simTick
 ruleStorageNewMemoryStore                     // storage.NewMemoryStore() → simNewStore()
 ruleFibGlobalPointerInternal                  // FibStrategyTable.Foo → simFib().Foo  (within fw/table pkg)
 ruleDeadNonceListMutex                        // add sync.RWMutex to DeadNonceList
-rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() to postUpdateRib
+rulePostUpdateRibConvergenceHook              // dv/dv/table_algo.go: append dv.runConvergenceHook() + dv.updatePsdPrefix() to postUpdateRib
 rulePrefixEventHooks                          // dv/table prefix announce/add hooks for convergence metrics
 // Code-injection rules (eliminate former *_sim.go overlay files).
 ruleInjectFibStrategyTreeExtensions   // fw/table/fib-strategy-tree.go (twophase)

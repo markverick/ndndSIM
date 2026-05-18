@@ -608,7 +608,8 @@ func compositeLiteralHasKey(lit *ast.CompositeLit, name string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Rule: append dv.runConvergenceHook() to postUpdateRib()
+// Rule: append dv.runConvergenceHook() to postUpdateRib().
+// Note: dv.updatePsdPrefix() is already in upstream dv2 at a841cc2.
 // ---------------------------------------------------------------------------
 
 func applyPostUpdateRibConvergenceHook(file *ast.File) bool {
@@ -1296,6 +1297,64 @@ func applyPfxSvsDeliveryCallbackInApplyOp(file *ast.File) bool {
 			},
 		}}
 		fd.Body.List = append([]ast.Stmt{injectStmt}, fd.Body.List...)
+		modified = true
+		break
+	}
+	return modified
+}
+
+// applyLinkMulticastPrefixesTwophase replaces the LinkMulticastPrefixes function body
+// in twophase to return the DV sync prefixes that need to be routed to neighbors.
+func applyLinkMulticastPrefixesTwophase(file *ast.File) bool {
+	modified := false
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "LinkMulticastPrefixes" || fd.Body == nil {
+			continue
+		}
+		// Replace the function body with the correct implementation
+		// return []enc.Name{
+		//     dv.config.AdvertisementSyncActivePrefix(),
+		//     dv.config.AdvertisementSyncPassivePrefix(),
+		// }
+		fd.Body.List = []ast.Stmt{
+			&ast.ReturnStmt{
+				Results: []ast.Expr{
+					&ast.CompositeLit{
+						Type: &ast.ArrayType{
+							Elt: &ast.SelectorExpr{
+								X:   ast.NewIdent("enc"),
+								Sel: ast.NewIdent("Name"),
+							},
+						},
+						Elts: []ast.Expr{
+							&ast.CallExpr{
+								Fun: &ast.SelectorExpr{
+									X: &ast.CallExpr{
+										Fun: &ast.SelectorExpr{
+											X:   ast.NewIdent("dv"),
+											Sel: ast.NewIdent("config"),
+										},
+									},
+									Sel: ast.NewIdent("AdvertisementSyncActivePrefix"),
+								},
+							},
+							&ast.CallExpr{
+								Fun: &ast.SelectorExpr{
+									X: &ast.CallExpr{
+										Fun: &ast.SelectorExpr{
+											X:   ast.NewIdent("dv"),
+											Sel: ast.NewIdent("config"),
+										},
+									},
+									Sel: ast.NewIdent("AdvertisementSyncPassivePrefix"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
 		modified = true
 		break
 	}

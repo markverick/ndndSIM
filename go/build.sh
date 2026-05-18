@@ -41,11 +41,10 @@ if [[ "$NDND_PHASE" == "onephase" ]]; then
     NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-main}"
 else
     # named-data/ndnd@dv2 — pristine upstream dv2 commit.
-    # bbe06d2: "dv: move pes sync under localhop" — fixes PES SVS broadcast
-    # bug where Interests forwarded by FIB after delivery to local faces
-    # caused duplicate/looped traffic. PES SVS prefix now /localhop/<net>/...
-    # and forwarder early-returns for /localhop multicast after local delivery.
-    NDND_HASH="${NDND_HASH:-bbe06d2}"
+    # a841cc2: "dv: fix RIB snapshot race in PSD prefix updates" — renamed PES to PSD,
+    # removed MulticastPrefix from SVS opts, added updatePsdPrefix() for dynamic PET
+    # egress management based on RIB reachability.
+    NDND_HASH="${NDND_HASH:-a841cc2}"
     NDND_GIT_BRANCH="${NDND_GIT_BRANCH:-dv2}"
 fi
 
@@ -127,7 +126,7 @@ fi
 # never silently replaces pristine sources.
 echo "==> Transforming ndnd source and applying overlay (phase: ${NDND_PHASE})"
 cd "${SCRIPT_DIR}/transform"
-GOWORK=off ${GO} run . \
+"${SCRIPT_DIR}/transform/transform" \
     --phase "$NDND_PHASE" \
     --src  "$WORK_DIR" \
     --out  "$TRANSFORMED_DIR" \
@@ -150,6 +149,13 @@ if [[ -d "${SCRIPT_DIR}/overlay-twophase" ]]; then
         copy_overlay_additions "${SCRIPT_DIR}/overlay-twophase" "$TRANSFORMED_DIR" "overlay-twophase"
     fi
 fi
+
+# ---------- step 2b: tidy go modules ----------
+echo "==> Running go mod tidy in transformed source"
+cd "$TRANSFORMED_DIR"
+${GO} mod tidy
+
+cd "${SCRIPT_DIR}"
 
 # ---------- step 3: go.work ----------
 echo "==> Generating go.work"

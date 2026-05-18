@@ -26,6 +26,9 @@ func addSimPetNextHop(any, enc.Name, uint64, uint64) {}
 
 func removeSimPetNextHop(any, enc.Name, uint64) {}
 
+// addSimPetEgress is a no-op in onephase: PET does not exist.
+func addSimPetEgress(any, enc.Name, enc.Name, bool) {}
+
 func registerMgmtLocalhost(fwd *SimForwarder, faceID uint64) {
 	fwd.fib.InsertNextHopEnc(defn.LOCAL_PREFIX, faceID, 0)
 }
