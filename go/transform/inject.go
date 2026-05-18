@@ -233,6 +233,20 @@ func (s *SvSync) simStart() {
 	s.ticker.callback = s.timerExpired
 }
 
+// SimStartQuiet starts SVS handlers for a synthetic-ready simulation without
+// sending the initial Sync Interest or scheduling periodic sync traffic.
+func (s *SvSync) SimStartQuiet() (err error) {
+	err = s.o.Client.Engine().AttachHandler(s.prefix,
+		func(args ndn.InterestHandlerArgs) {
+			s.onSyncInterest(args.Interest)
+		})
+	if err != nil {
+		return err
+	}
+	s.running.Store(true)
+	return nil
+}
+
 // simRecvSv processes an incoming state vector directly, bypassing the recvSv
 // channel.  Called by transformer-generated code replacing s.recvSv <- sv.
 func (s *SvSync) simRecvSv(sv svSyncRecvSvArgs) {
@@ -347,6 +361,28 @@ func (t *Thread) RunMaintenance() {
 }
 `
 
+// bierSimSnippet is injected into fw/bier/bier.go for per-node simulation
+// state.  Caller must set ndndsimUsed=true so _ndndsim is imported.
+const bierSimSnippet = `
+// simFib returns the per-node FIB for BIER's BuildFromFib path.
+func simFib() table.FibStrategy {
+	h := _ndndsim.GetHooks()
+	if h.Fib == nil {
+		return table.FibStrategyTable
+	}
+	return h.Fib.(table.FibStrategy)
+}
+
+// SimBift returns the per-node BIFT for the current simulation node.
+func SimBift() *BiftState {
+	h := _ndndsim.GetHooks()
+	if h.Bift == nil {
+		return Bift
+	}
+	return h.Bift.(*BiftState)
+}
+`
+
 // nfdcSimSnippet is injected into dv/nfdc/nfdc.go.
 // Caller must set ndndsimUsed=true so that _ndndsim is imported.
 const nfdcSimSnippet = `
@@ -443,8 +479,8 @@ func (dv *Router) Init() error {
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Initialise prefix egress state (table only; SVS not yet started).
-	dv.pfx.Reset()
+	// Prefix state starts empty in simulation. Do not publish an initial reset:
+	// synthetic one-prefix runs must not count prefix-sync bootstrap traffic.
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
 	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
@@ -488,7 +524,7 @@ var _pfxReachable sync.Map // *Router → int
 // It is called from runConvergenceHook() in notify.go on every RIB update,
 // with the current number of reachable routers passed as reachableCount.
 //
-// PES subscriptions are set up here for all known neighbors before pfxSvs.Start().
+// PSD subscriptions are set up here for all known neighbors before pfxSvs.Start().
 // We call the three sub-components of PrefixModule.Start() directly instead of
 // Start() itself because Start() calls pfx.pfx.Reset() which wipes announcements
 // queued before convergence.
@@ -505,7 +541,7 @@ func (dv *Router) startPfxOnce(reachableCount int) {
 		prev.(func())()
 	}
 
-	// Subscribe to PES routers before starting pfxSvs.
+	// Subscribe to PSD routers before starting pfxSvs.
 	selfName := dv.config.RouterName()
 	for _, ns := range dv.neighbors.GetAll() {
 		router := ns.Name
@@ -518,7 +554,7 @@ func (dv *Router) startPfxOnce(reachableCount int) {
 		}
 		dv.pfx.pfxSeen[routerHash] = router.Clone()
 		dv.pfx.pfxSubs[routerHash] = router.Clone()
-		if dv.pfx.replicatePes && dv.pfx.nfdc != nil {
+		if dv.pfx.replicatePsd && dv.pfx.nfdc != nil {
 			route := dv.pfx.pfxGroup.Append(router...)
 			dv.pfx.nfdc.Exec(nfdc.NfdMgmtCmd{
 				Module:  "pet",
@@ -596,6 +632,51 @@ func (dv *Router) NumPendingFetchInterests() uint64 {
 		return 0
 	}
 	return dv.pfx.pfxSvs.NumPendingFetchInterests()
+}
+
+func simBfrIDFromRouterName(name enc.Name) (int, bool) {
+	if len(name) == 0 {
+		return 0, false
+	}
+	lastComp := name[len(name)-1].String()
+	var id int
+	// Try "node%d" format (grid topologies)
+	if n, _ := fmt.Sscanf(lastComp, "node%d", &id); n == 1 {
+		return id, true
+	}
+	// Try "rf%d" format (Rocketfuel topologies)
+	if n, _ := fmt.Sscanf(lastComp, "rf%d", &id); n == 1 {
+		return id, true
+	}
+	// Try generic trailing digits (any format ending with digits)
+	for i := len(lastComp) - 1; i >= 0; i-- {
+		if lastComp[i] < '0' || lastComp[i] > '9' {
+			if n, _ := fmt.Sscanf(lastComp[i:], "%d", &id); n == 1 {
+				return id, true
+			}
+			break
+		}
+	}
+	return 0, false
+}
+
+func (dv *Router) RegisterSimBierRouters() {
+	dv.mutex.Lock()
+	routers := []enc.Name{dv.config.RouterName()}
+	for _, entry := range dv.rib.Entries() {
+		routers = append(routers, entry.Name().Clone())
+	}
+	dv.mutex.Unlock()
+
+	registeredCount := 0
+	for _, router := range routers {
+		if id, ok := simBfrIDFromRouterName(router); ok {
+			bier.SimBift().RegisterRouter(router, id)
+			registeredCount++
+		}
+	}
+	bier.SimBift().BuildFromFib()
+	log.Info(dv, "registerSimBierRouters: ", "numRouters", len(routers), "numRegistered", registeredCount)
 }
 `
 
@@ -852,6 +933,13 @@ func (s *SvsALO) simQueuePubl(name enc.Name) {
 // s.stop <- struct{}{} in Stop().
 func (s *SvsALO) simStop() {}
 
+// SimStartQuiet starts the underlying SVS handler without emitting bootstrap
+// sync traffic. The next publication still advertises immediately.
+func (s *SvsALO) SimStartQuiet() error {
+	s.opts.Snapshot = &SnapshotNull{}
+	return s.svs.SimStartQuiet()
+}
+
 // NumPendingFetchInterests returns the total number of in-flight data fetch
 // Interests across all publishers. This is the sum of (Pending - Known) for
 // each publisher. A non-zero value indicates there are Interests that have
@@ -917,7 +1005,7 @@ func applySvsAloSnapContentStruct(file *ast.File, fset *token.FileSet) bool {
 		newField := &ast.Field{
 			Names: []*ast.Ident{ast.NewIdent("snapContent")},
 			Type: &ast.MapType{
-				Key:   ast.NewIdent("string"),
+				Key: ast.NewIdent("string"),
 				Value: &ast.MapType{
 					Key:   ast.NewIdent("uint64"),
 					Value: ast.NewIdent("enc.Wire"),
@@ -1110,7 +1198,7 @@ func applySvsAloSnapContentInit(file *ast.File, fset *token.FileSet) bool {
 			// Add initSnapContent call after this statement
 			callStmt := &ast.ExprStmt{
 				X: &ast.CallExpr{
-					Fun: &ast.Ident{Name: "initSnapContent"},
+					Fun:  &ast.Ident{Name: "initSnapContent"},
 					Args: []ast.Expr{ast.NewIdent("s")},
 				},
 			}
@@ -1411,6 +1499,12 @@ func applyThreadSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	return true
 }
 
+func applyBierSimExtensions(file *ast.File, fset *token.FileSet) bool {
+	patchCfgBierIndex(file)
+	injectDecls(file, fset, bierSimSnippet)
+	return true
+}
+
 // applyNfdcSimExtensions injects simExec into dv/nfdc/nfdc.go.
 // Caller must set ndndsimUsed=true so that _ndndsim is imported.
 func applyNfdcSimExtensions(file *ast.File, fset *token.FileSet) bool {
@@ -1429,6 +1523,7 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, routerSimSnippet)
 	// ndn_sync is not in the upstream router.go; needed for injected methods.
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
+	addNamedImport(file, "bier", "github.com/named-data/ndnd/fw/bier")
 	// enc and log are needed by Init, LinkMulticastPrefixes, PrefixAnnounceCmd, PrefixWithdrawCmd.
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
@@ -1583,15 +1678,12 @@ func (dv *Router) Init() error {
 		return err
 	}
 
-	// Start prefix table sync (SVS-based in main@51774b8).
-	dv.startPfxOnce(0)
-
 	// Add self to the RIB and generate the initial advertisement.
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Reset prefix table.
-	dv.pfx.Reset()
+	// Prefix state starts empty in simulation. Do not publish an initial reset:
+	// synthetic one-prefix runs must not count prefix-sync bootstrap traffic.
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
 	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
@@ -1687,16 +1779,15 @@ func (dv *Router) PrefixWithdrawCmd() enc.Name {
 var _pfxStarted sync.Map
 
 // startPfxOnce starts the prefix SVS sync exactly once per Router instance.
-// In the onephase build Init() already calls pfxSvs.Start(); subsequent calls
-// from runConvergenceHook are deduplicated by _pfxStarted and are no-ops.
 // The reachableCount argument is accepted for signature compatibility with
-// notify.go but is unused in the onephase (immediate-start) path.
+// notify.go but is unused in the onephase path.
 func (dv *Router) startPfxOnce(_ int) {
 	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); !loaded {
 		dv.pfxSvs.Start()
 	}
 }
 `
+
 // ---------------------------------------------------------------------------
 
 func applyFibStrategyTreeExtensionsOp(file *ast.File, fset *token.FileSet) bool {

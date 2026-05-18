@@ -2,9 +2,9 @@ package sim
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
-	_ndndsim "github.com/named-data/ndndsim"
 	"github.com/named-data/ndnd/dv/config"
 	"github.com/named-data/ndnd/dv/dv"
 	enc "github.com/named-data/ndnd/std/encoding"
@@ -15,6 +15,7 @@ import (
 	ndn_sync "github.com/named-data/ndnd/std/sync"
 	"github.com/named-data/ndnd/std/types/optional"
 	"github.com/named-data/ndnd/std/utils"
+	_ndndsim "github.com/named-data/ndndsim"
 )
 
 // SimDvRouter wraps a DV Router for simulation. It manages the DV lifecycle
@@ -168,6 +169,33 @@ func (sd *SimDvRouter) Router() *dv.Router {
 	return sd.router
 }
 
+func (sd *SimDvRouter) SeedSyntheticRoutes(routes []dv.SyntheticRoute) {
+	hooks := sd.hooks
+	_ndndsim.BindNode(hooks)
+	defer _ndndsim.UnbindNode()
+	sd.fwd.withNodeFib(func() {
+		sd.router.SeedSyntheticRoutes(routes)
+	})
+}
+
+// SeedBiftFromRib populates the BIER forwarding table from the RIB.
+// This must be called after synthetic routes have been seeded.
+// No-op in onephase where BIER is not available.
+func (sd *SimDvRouter) SeedBiftFromRib() {
+	hooks := sd.hooks
+	_ndndsim.BindNode(hooks)
+	defer _ndndsim.UnbindNode()
+	sd.fwd.withNodeFib(func() {
+		// Use reflection to check if RegisterSimBierRouters exists (twophase only).
+		routerVal := reflect.ValueOf(sd.router)
+		method := routerVal.MethodByName("RegisterSimBierRouters")
+		if method.IsValid() {
+			method.Call(nil)
+		}
+		// In onephase, the method doesn't exist and this is a no-op.
+	})
+}
+
 func (sd *SimDvRouter) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 	return sd.router.PrefixSyncSuppressionStats()
 }
@@ -199,6 +227,12 @@ func (sd *SimDvRouter) PrefixAnnounceCmd() enc.Name {
 // "rib","unregister" in onephase).
 func (sd *SimDvRouter) PrefixWithdrawCmd() enc.Name {
 	return sd.router.PrefixWithdrawCmd()
+}
+
+// StartPfxIfSyntheticStable starts prefix sync when synthetic routing/PET
+// seeding has already made this router convergence-stable.
+func (sd *SimDvRouter) StartPfxIfSyntheticStable() {
+	sd.router.StartPfxIfSyntheticStable()
 }
 
 // AnnouncePrefix sends a readvertise Interest to the DV router's management

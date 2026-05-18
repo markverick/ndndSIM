@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	dv_pkg "github.com/named-data/ndnd/dv/dv"
 	dv_table "github.com/named-data/ndnd/dv/table"
 	enc "github.com/named-data/ndnd/std/encoding"
 	"github.com/named-data/ndnd/std/ndn"
@@ -716,7 +718,73 @@ func NdndSimAnnouncePrefixToDv(nodeId C.uint32_t, prefixStr *C.char, prefixLen C
 		return -1
 	}
 
+	globalRuntime.IterNodes(func(_ uint32, node *Node) {
+		node.StartPfxIfSyntheticStable()
+	})
+
+	prev := _ndndsim.SwapNode(node.Hooks())
+	defer _ndndsim.RestoreNode(prev)
 	node.AnnouncePrefixToDv(name, 0)
+	return 0
+}
+
+type syntheticRouteJSON struct {
+	Dest    string `json:"dest"`
+	NextHop string `json:"nextHop"`
+	Cost    uint64 `json:"cost"`
+	FaceId  uint64 `json:"faceId"`
+}
+
+//export NdndSimSeedSyntheticDvRoutes
+func NdndSimSeedSyntheticDvRoutes(nodeId C.uint32_t, routesStr *C.char, routesLen C.int) C.int {
+	if globalRuntime == nil {
+		return -1
+	}
+	node := globalRuntime.GetNode(uint32(nodeId))
+	if node == nil {
+		return -1
+	}
+
+	var raw []syntheticRouteJSON
+	if err := json.Unmarshal([]byte(C.GoStringN(routesStr, routesLen)), &raw); err != nil {
+		return -1
+	}
+
+	routes := make([]dv_pkg.SyntheticRoute, 0, len(raw))
+	for _, row := range raw {
+		dest, err := parseNameFromString(row.Dest)
+		if err != nil {
+			return -1
+		}
+		nextHop, err := parseNameFromString(row.NextHop)
+		if err != nil {
+			return -1
+		}
+		routes = append(routes, dv_pkg.SyntheticRoute{
+			Dest:    dest,
+			NextHop: nextHop,
+			Cost:    row.Cost,
+			FaceId:  row.FaceId,
+		})
+	}
+
+	if !node.SeedSyntheticDvRoutes(routes) {
+		return -1
+	}
+	return 0
+}
+
+//export NdndSimSeedBiftFromRib
+func NdndSimSeedBiftFromRib(nodeId C.uint32_t) C.int {
+	if globalRuntime == nil {
+		return -1
+	}
+	node := globalRuntime.GetNode(uint32(nodeId))
+	if node == nil {
+		return -1
+	}
+
+	node.SeedBiftFromRib()
 	return 0
 }
 

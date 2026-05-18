@@ -12,6 +12,7 @@ import (
 	"github.com/named-data/ndnd/fw/face"
 	"github.com/named-data/ndnd/fw/table"
 	enc "github.com/named-data/ndnd/std/encoding"
+	"github.com/named-data/ndnd/std/log"
 	"github.com/named-data/ndnd/std/ndn"
 )
 
@@ -349,12 +350,17 @@ func (n *Node) StartDv(network, router string, cfgJSON string) error {
 	for _, faceID := range n.ifaceFaces {
 		n.Forwarder.AddRouteWithOrigin(neighborsPrefix, faceID, 1, config.NlsrOrigin)
 	}
-	// In onephase there is no multicastFib/BROADCAST_STRATEGY; install explicit
-	// link-face routes for DV sync prefixes so heartbeats reach neighbors.
-	// In twophase LinkMulticastPrefixes() returns nil — no-op.
+	// Install DV sync prefixes as PET egresses pointing to /localhop/neighbors.
+	// In twophase, the forwarder's PET uses this egress to look up all neighbor
+	// faces via the FIB for multicast forwarding. In onephase, AddMulticastEgress
+	// is a no-op and the FIB routes below provide unicast forwarding.
 	for _, prefix := range sdv.LinkMulticastPrefixes() {
+		log.Info(nil, "DEBUG: installing DV sync prefix PET egress", "prefix", prefix, "egress", neighborsPrefix, "node", n.id)
+		n.Forwarder.AddMulticastEgress(prefix, neighborsPrefix, true)
+		log.Info(nil, "DEBUG: installing DV sync prefix FIB routes", "prefix", prefix, "node", n.id)
 		for _, faceID := range n.ifaceFaces {
 			n.Forwarder.AddRouteWithOrigin(prefix, faceID, 1, config.NlsrOrigin)
+			log.Info(nil, "DEBUG: added FIB route", "prefix", prefix, "faceID", faceID, "node", n.id)
 		}
 	}
 	n.dvRouter = sdv
@@ -409,5 +415,17 @@ func (n *Node) WithdrawPrefixFromDv(name enc.Name) {
 		prev := _ndndsim.SwapNode(n.hooks)
 		defer _ndndsim.RestoreNode(prev)
 		dv.WithdrawPrefix(name, faceID)
+	}
+}
+
+// SeedBiftFromRib populates the BIER forwarding table from the RIB.
+// This must be called after synthetic routes have been seeded.
+// No-op if DV is not running or BIER is not available (onephase).
+func (n *Node) SeedBiftFromRib() {
+	n.mu.Lock()
+	dv := n.dvRouter
+	n.mu.Unlock()
+	if dv != nil {
+		dv.SeedBiftFromRib()
 	}
 }
