@@ -591,11 +591,12 @@ func (dv *Router) PrefixSyncSuppressionStats() ndn_sync.SuppressStats {
 }
 
 // LinkMulticastPrefixes returns prefixes that must be forwarded to all link
-// faces for DV sync to reach neighbors.
-// In twophase, the multicastFib BROADCAST_STRATEGY handles this automatically;
-// return nil so the caller skips explicit link-face route installation.
+// faces for DV sync to reach neighbors in the simulation harness.
 func (dv *Router) LinkMulticastPrefixes() []enc.Name {
-	return nil
+	return []enc.Name{
+		dv.config.AdvertisementSyncPrefix(),
+		dv.pfx.SyncPrefix(),
+	}
 }
 
 // MgmtPrefix returns the management prefix for this DV router instance.
@@ -677,6 +678,51 @@ func (dv *Router) RegisterSimBierRouters() {
 	}
 	bier.SimBift().BuildFromFib()
 	log.Info(dv, "registerSimBierRouters: ", "numRouters", len(routers), "numRegistered", registeredCount)
+}
+
+type SyntheticRoute struct {
+	Dest    enc.Name
+	NextHop enc.Name
+	Cost    uint64
+	FaceId  uint64
+}
+
+var _syntheticRoutingStable sync.Map
+
+func (dv *Router) syntheticRoutingIsStable() bool {
+	_, ok := _syntheticRoutingStable.Load(dv)
+	return ok
+}
+
+func (dv *Router) SeedSyntheticRoutes(routes []SyntheticRoute) {
+	dv.mutex.Lock()
+	for _, route := range routes {
+		dv.neighbors.SimSetNeighborFace(route.NextHop, route.FaceId)
+		dv.rib.Set(route.Dest, route.NextHop, route.Cost)
+	}
+	dv.mutex.Unlock()
+
+	dv.updateFib()
+	dv.advert.generate()
+	dv.simSeedPsdPrefix()
+
+	_syntheticRoutingStable.Store(dv, struct{}{})
+	log.Info(dv, "seedSyntheticRoutes", "numRoutes", len(routes))
+}
+
+func (dv *Router) StartPfxIfSyntheticStable() {
+	if _, ok := _syntheticRoutingStable.LoadAndDelete(dv); !ok {
+		return
+	}
+	reachableCount := 0
+	dv.mutex.Lock()
+	for _, entry := range dv.rib.Entries() {
+		if !entry.Name().Equal(dv.config.RouterName()) {
+			reachableCount++
+		}
+	}
+	dv.mutex.Unlock()
+	dv.startPfxSyntheticReady(reachableCount)
 }
 `
 
@@ -1500,7 +1546,56 @@ func applyThreadSimExtensions(file *ast.File, fset *token.FileSet) bool {
 }
 
 func applyBierSimExtensions(file *ast.File, fset *token.FileSet) bool {
-	patchCfgBierIndex(file)
+	injectDecls(file, fset, bierSimSnippet)
+	modified := applyBierCfgIndexHooks(file)
+	return true || modified
+}
+
+func applyBierCfgIndexHooks(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name == nil || fn.Name.Name != "CfgBierIndex" {
+			continue
+		}
+		fn.Body = &ast.BlockStmt{List: []ast.Stmt{
+			&ast.IfStmt{
+				Init: &ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent("h")},
+					Tok: token.DEFINE,
+					Rhs: []ast.Expr{&ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("_ndndsim"), Sel: ast.NewIdent("GetHooks")}}},
+				},
+				Cond: &ast.SelectorExpr{X: ast.NewIdent("h"), Sel: ast.NewIdent("BierIndexSet")},
+				Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.SelectorExpr{X: ast.NewIdent("h"), Sel: ast.NewIdent("BierIndex")}}}}},
+			},
+			&ast.ReturnStmt{Results: []ast.Expr{&ast.SelectorExpr{
+				X: &ast.SelectorExpr{X: &ast.SelectorExpr{X: ast.NewIdent("core"), Sel: ast.NewIdent("C")}, Sel: ast.NewIdent("Fw")},
+				Sel: ast.NewIdent("BierIndex"),
+			}}},
+		}}
+		return true
+	}
+	return false
+}
+
+func applyBierSimBiftInTableAlgo(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		sel, ok := c.Node().(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Bift" {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "bier" {
+			return true
+		}
+		c.Replace(&ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("bier"), Sel: ast.NewIdent("SimBift")}})
+		modified = true
+		return true
+	}, nil)
+	return modified
+}
+
+func applyBierSimExtensionsOld(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, bierSimSnippet)
 	return true
 }
@@ -1527,6 +1622,7 @@ func applyRouterSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	// enc and log are needed by Init, LinkMulticastPrefixes, PrefixAnnounceCmd, PrefixWithdrawCmd.
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
 	addNamedImport(file, "log", "github.com/named-data/ndnd/std/log")
+	addNamedImport(file, "sync", "sync")
 	return true
 }
 
@@ -1786,6 +1882,42 @@ func (dv *Router) startPfxOnce(_ int) {
 		dv.pfxSvs.Start()
 	}
 }
+
+type SyntheticRoute struct {
+	Dest    enc.Name
+	NextHop enc.Name
+	Cost    uint64
+	FaceId  uint64
+}
+
+var _syntheticRoutingStable sync.Map
+
+func (dv *Router) syntheticRoutingIsStable() bool {
+	_, ok := _syntheticRoutingStable.Load(dv)
+	return ok
+}
+
+func (dv *Router) SeedSyntheticRoutes(routes []SyntheticRoute) {
+	dv.mutex.Lock()
+	for _, route := range routes {
+		dv.neighbors.SimSetNeighborFace(route.NextHop, route.FaceId)
+		dv.rib.Set(route.Dest, route.NextHop, route.Cost)
+	}
+	dv.mutex.Unlock()
+
+	dv.updateFib()
+	dv.advert.generate()
+
+	_syntheticRoutingStable.Store(dv, struct{}{})
+	log.Info(dv, "seedSyntheticRoutes", "numRoutes", len(routes))
+}
+
+func (dv *Router) StartPfxIfSyntheticStable() {
+	if _, ok := _syntheticRoutingStable.LoadAndDelete(dv); !ok {
+		return
+	}
+	dv.startPfxSyntheticReady(0)
+}
 `
 
 // ---------------------------------------------------------------------------
@@ -1812,5 +1944,6 @@ func applyRouterSimExtensionsOp(file *ast.File, fset *token.FileSet) bool {
 	addNamedImport(file, "ndn_sync", "github.com/named-data/ndnd/std/sync")
 	// enc is needed by LinkMulticastPrefixes.
 	addNamedImport(file, "enc", "github.com/named-data/ndnd/std/encoding")
+	addNamedImport(file, "sync", "sync")
 	return true
 }

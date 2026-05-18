@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 
+	"github.com/named-data/ndnd/fw/bier"
 	"github.com/named-data/ndnd/fw/defn"
 	"github.com/named-data/ndnd/fw/fw"
 	"github.com/named-data/ndnd/fw/table"
@@ -17,6 +18,10 @@ func newSimPet() any {
 
 func newSimMulticastFib() table.FibStrategy {
 	return table.NewMulticastStrategyTree()
+}
+
+func newSimBift() any {
+	return &bier.BiftState{}
 }
 
 func attachSimPetThread(thread *fw.Thread, pet any) {

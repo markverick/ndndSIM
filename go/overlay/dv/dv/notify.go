@@ -2,7 +2,6 @@ package dv
 
 import (
 	"github.com/named-data/ndnd/dv/table"
-	"github.com/named-data/ndnd/std/log"
 	_ndndsim "github.com/named-data/ndndsim"
 )
 
@@ -12,12 +11,11 @@ import (
 // cgo_export.go deduplicates events per (nodeRouter, reachableRouter) pair, so
 // firing on every update is safe -- only the first event per pair is counted.
 //
-// startPfxOnce() is called here (rather than in Init()) to defer PES SVS
+// startPfxOnce() is called here (rather than in Init()) to defer prefix sync
 // startup until routing has converged.  In large topologies this prevents a
 // broadcast storm caused by pfxSvs flooding sync Interests over
 // BroadcastStrategy before any PET-scoped nexthops exist.
 func (dv *Router) runConvergenceHook() {
-	log.Info(dv, "DEBUG: runConvergenceHook called")
 	dv.mutex.Lock()
 	now := _ndndsim.Now()
 	nodeRouter := dv.config.RouterName()
@@ -34,10 +32,14 @@ func (dv *Router) runConvergenceHook() {
 	}
 	dv.mutex.Unlock()
 
-	// Start PES SVS sync once routing stabilises (deferred from Init).
-	// Pass the current reachable-router count so startPfxOnce can debounce
-	// only on topology growth, ignoring periodic re-advertisements.
-	dv.startPfxOnce(len(evts))
+	dv.registerPhaseBierRouters()
+
+	if !dv.syntheticRoutingIsStable() {
+		// Start prefix sync once routing stabilises (deferred from Init).
+		// Synthetic routing is already stable, so it waits for prefix
+		// introduction to auto-start prefix sync.
+		dv.startPfxOnce(len(evts))
+	}
 	for _, ev := range evts {
 		table.NotifyRouterReachable(ev)
 	}

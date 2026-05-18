@@ -110,6 +110,14 @@ extern "C"
                                           char* prefixStr,
                                           int prefixLen);
 
+    /** Seed synthetic DV routing entries as JSON route rows. Returns 0 on success. */
+    extern int NdndSimSeedSyntheticDvRoutes(uint32_t nodeId,
+                                             char* routesStr,
+                                             int routesLen);
+
+    /** Seed twophase BIER forwarding state from the synthetic RIB. No-op in onephase. */
+    extern int NdndSimSeedBiftFromRib(uint32_t nodeId);
+
     /** Withdraw a prefix from this node's DV router. Returns 0 on success. */
     extern int NdndSimWithdrawPrefixFromDv(uint32_t nodeId,
                                             char* prefixStr,

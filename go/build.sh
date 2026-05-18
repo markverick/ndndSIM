@@ -25,9 +25,11 @@
 #   OUT_LIB         – output path for the compiled .a archive
 #   GO              – Go binary to use
 #   NDND_TEST_ONLY  – if 1, skip the CGo archive build (transformer + go test only)
+#   NDND_SKIP_TESTS – if 1, skip Go sim tests after generating/building the archive
 set -euo pipefail
 
 NDND_TEST_ONLY="${NDND_TEST_ONLY:-0}"
+NDND_SKIP_TESTS="${NDND_SKIP_TESTS:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -120,12 +122,16 @@ else
     git -C "$NDND_SRC" worktree add --detach "$WORK_DIR" "$NDND_HASH"
 fi
 
+# ---------- step 1b: build transformer ----------
+echo "==> Building transformer from source"
+cd "${SCRIPT_DIR}/transform"
+GOWORK=off "$GO" build -o transform .
+
 # ---------- step 2: transform + overlay ----------
 # The overlay/ directory provides only net-new files such as the sim/ package.
 # Any patch to an upstream ndnd file must live in the transformer so the build
 # never silently replaces pristine sources.
 echo "==> Transforming ndnd source and applying overlay (phase: ${NDND_PHASE})"
-cd "${SCRIPT_DIR}/transform"
 "${SCRIPT_DIR}/transform/transform" \
     --phase "$NDND_PHASE" \
     --src  "$WORK_DIR" \
@@ -185,7 +191,11 @@ if [[ "$NDND_TEST_ONLY" != "1" ]]; then
         github.com/named-data/ndnd/sim/cmd
 fi
 
-echo "==> Running sim tests"
-${GO} test -count=1 -timeout 300s github.com/named-data/ndnd/sim
+if [[ "$NDND_SKIP_TESTS" != "1" ]]; then
+    echo "==> Running sim tests"
+    ${GO} test -count=1 -timeout 300s github.com/named-data/ndnd/sim
+else
+    echo "==> Skipping sim tests (NDND_SKIP_TESTS=1)"
+fi
 
 [[ "$NDND_TEST_ONLY" == "1" ]] && echo "==> Done (test-only)" || echo "==> Done: ${OUT_LIB}"

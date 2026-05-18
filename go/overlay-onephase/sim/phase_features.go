@@ -18,6 +18,10 @@ func newSimMulticastFib() table.FibStrategy {
 	return nil
 }
 
+func newSimBift() any {
+	return nil
+}
+
 func attachSimPetThread(*fw.Thread, any) {}
 
 func cleanUpSimPetFace(any, uint64) {}

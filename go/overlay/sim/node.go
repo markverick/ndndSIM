@@ -6,14 +6,15 @@ import (
 	"sync"
 	"time"
 
-	_ndndsim "github.com/named-data/ndndsim"
 	"github.com/named-data/ndnd/dv/config"
+	"github.com/named-data/ndnd/dv/dv"
 	"github.com/named-data/ndnd/fw/defn"
 	"github.com/named-data/ndnd/fw/face"
 	"github.com/named-data/ndnd/fw/table"
 	enc "github.com/named-data/ndnd/std/encoding"
 	"github.com/named-data/ndnd/std/log"
 	"github.com/named-data/ndnd/std/ndn"
+	_ndndsim "github.com/named-data/ndndsim"
 )
 
 // simInitMu guards one-time initialisation of the face and table subsystems.
@@ -100,6 +101,9 @@ func NewNode(id uint32, clock Clock) *Node {
 		Now:              clock.Now,
 		Synchronous:      true,
 		EnableFaceEvents: false,
+		Bift:             newSimBift(),
+		BierIndex:        int(id),
+		BierIndexSet:     true,
 	}
 
 	n := &Node{
@@ -428,4 +432,28 @@ func (n *Node) SeedBiftFromRib() {
 	if dv != nil {
 		dv.SeedBiftFromRib()
 	}
+}
+
+// StartPfxIfSyntheticStable starts prefix sync when synthetic routing/PET
+// state has been installed. No-op if DV is not running.
+func (n *Node) StartPfxIfSyntheticStable() {
+	n.mu.Lock()
+	dv := n.dvRouter
+	n.mu.Unlock()
+	if dv != nil {
+		dv.StartPfxIfSyntheticStable()
+	}
+}
+
+// SeedSyntheticDvRoutes seeds synthetic DV routing state.
+// No-op if DV is not running.
+func (n *Node) SeedSyntheticDvRoutes(routes []dv.SyntheticRoute) bool {
+	n.mu.Lock()
+	dv := n.dvRouter
+	n.mu.Unlock()
+	if dv != nil {
+		dv.SeedSyntheticRoutes(routes)
+		return true
+	}
+	return false
 }

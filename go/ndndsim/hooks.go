@@ -50,6 +50,15 @@ type NodeHooks struct {
 	// as interface{} to avoid an import cycle).  nil → use global MulticastStrategyTable.
 	MulticastFib interface{}
 
+	// Bift is the per-node BIER forwarding table (*fw/bier.BiftState).
+	// nil → use the global Bift.
+	Bift interface{}
+
+	// BierIndex is the per-node BFR-ID. BierIndexSet distinguishes the valid
+	// index 0 from the production fallback.
+	BierIndex    int
+	BierIndexSet bool
+
 	// KeyChain is a pre-built keychain (ndn.KeyChain) that bypasses
 	// the KeyChainUri file-based setup.  nil → use KeyChainUri.
 	KeyChain interface{}

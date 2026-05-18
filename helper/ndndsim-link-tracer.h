@@ -21,6 +21,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ns3
 {
@@ -56,8 +57,9 @@ class NdnPayloadTag : public Tag
  */
 enum class TrafficCategory : uint8_t
 {
-    DvAdvert = 0,  ///< DV advertisement sync & data  (/localhop/.../32=DV/...)
-    PrefixSync,    ///< DV prefix-table sync           (/.../32=DV/32=PFS/...)
+    DvAdvert = 0, ///< DV advertisement sync & data  (/localhop/.../32=DV/...)
+    PFS,          ///< onephase prefix-table sync     (/.../32=DV/32=PFS/...)
+    PSD,          ///< twophase prefix-state sync     (/.../32=DV/32=PSD/...)
     Mgmt,          ///< Local management               (/localhost/nlsr/...)
     UserInterest,  ///< User/application Interest
     UserData,      ///< User/application Data
@@ -74,7 +76,7 @@ static constexpr size_t kNumCategories = static_cast<size_t>(TrafficCategory::CO
  * raw NDN TLV to classify each packet.  L2-header agnostic — works
  * with PointToPoint, CSMA, Wi-Fi, etc.
  *
- * CSV columns: Time,DvAdvert_Pkts,DvAdvert_Bytes,PrefixSync_Pkts,PrefixSync_Bytes,
+ * CSV columns: Time,DvAdvert_Pkts,DvAdvert_Bytes,PFS_Pkts,PFS_Bytes,PSD_Pkts,PSD_Bytes,
  *              Mgmt_Pkts,Mgmt_Bytes,UserInterest_Pkts,UserInterest_Bytes,
  *              UserData_Pkts,UserData_Bytes,Other_Pkts,Other_Bytes
  */
@@ -83,21 +85,43 @@ class NdndLinkTracer
   public:
     /// Create an interval-sampled tracer (original behaviour).
     static std::shared_ptr<NdndLinkTracer> Create(const std::string& file, Time period);
+    static std::shared_ptr<NdndLinkTracer> Create(const std::string& file,
+                                                  Time period,
+                                                  const std::string& node,
+                                                  const std::string& peer,
+                                                  bool append);
 
     /// Create a per-packet event tracer that logs every packet with its timestamp.
     static std::shared_ptr<NdndLinkTracer> CreatePerPacket(const std::string& file);
+    static std::shared_ptr<NdndLinkTracer> CreatePerPacket(const std::string& file,
+                                                           const std::string& node,
+                                                           const std::string& peer,
+                                                           bool append);
 
     ~NdndLinkTracer();
 
     void ConnectLink(NetDeviceContainer devices);
+    void ConnectLink(NetDeviceContainer devices,
+                     const std::string& node,
+                     const std::string& peer);
     void ConnectDevice(Ptr<NetDevice> dev);
     void Stop();
 
   private:
     NdndLinkTracer(const std::string& file, Time period);
+    NdndLinkTracer(const std::string& file,
+                   Time period,
+                   const std::string& node,
+                   const std::string& peer,
+                   bool append);
     NdndLinkTracer(const std::string& file); // per-packet mode
+    NdndLinkTracer(const std::string& file,
+                   const std::string& node,
+                   const std::string& peer,
+                   bool append);
 
     void MacTxCallback(Ptr<const Packet> packet);
+    void MacTxCallbackWithContext(std::string context, Ptr<const Packet> packet);
     void WriteStats();
     void ScheduleNext();
 
@@ -108,6 +132,8 @@ class NdndLinkTracer
     Time m_period;
     EventId m_event;
     bool m_perPacket = false;
+    std::string m_node;
+    std::string m_peer;
 
     struct Counters
     {
@@ -115,7 +141,20 @@ class NdndLinkTracer
         uint64_t bytes = 0;
     };
 
+    struct LinkCounters
+    {
+        std::string node;
+        std::string peer;
+        std::array<Counters, kNumCategories> counters;
+    };
+
+    TrafficCategory ClassifyPacket(Ptr<const Packet> packet, uint32_t* lpBytes) const;
+    void CountPacket(std::array<Counters, kNumCategories>& counters,
+                     TrafficCategory cat,
+                     uint32_t lpBytes);
+
     std::array<Counters, kNumCategories> m_counters;
+    std::vector<LinkCounters> m_linkCounters;
 };
 
 } // namespace ndndsim

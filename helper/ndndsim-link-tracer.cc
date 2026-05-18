@@ -10,6 +10,7 @@
 #include "ns3/simulator.h"
 
 #include <cstring>
+#include <sstream>
 
 namespace ns3
 {
@@ -185,14 +186,15 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
     //
     // Categories:
     //   /localhop/.../32=DV/...           → DvAdvert
-    //   /.../32=DV/32=PFS/...             → PrefixSync (onephase)
-    //   /.../32=DV/32=PES/...             → PrefixSync (twophase PrefixEgreState)
+    //   /.../32=DV/32=PFS/...             → PFS (onephase prefix sync)
+    //   /.../32=DV/32=PSD/...             → PSD (twophase prefix sync)
     //   /localhost/nlsr/...               → Mgmt
     //   else                              → UserInterest or UserData
 
     bool firstIsLocalhost = false;
     bool seenDvKeyword = false;
-    bool seenPfxSyncKeyword = false;
+    bool seenPfsKeyword = false;
+    bool seenPsdKeyword = false;
     bool secondIsNlsr = false;
     int compIdx = 0;
 
@@ -221,8 +223,10 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
         {
             if (ComponentEquals(cVal, cLen, "DV"))
                 seenDvKeyword = true;
-            if (ComponentEquals(cVal, cLen, "PFS") || ComponentEquals(cVal, cLen, "PES"))
-                seenPfxSyncKeyword = true;
+            if (ComponentEquals(cVal, cLen, "PFS"))
+                seenPfsKeyword = true;
+            if (ComponentEquals(cVal, cLen, "PSD"))
+                seenPsdKeyword = true;
         }
 
         compIdx++;
@@ -231,8 +235,10 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
     // Classify
     if (firstIsLocalhost && secondIsNlsr)
         return TrafficCategory::Mgmt;
-    if (seenDvKeyword && seenPfxSyncKeyword)
-        return TrafficCategory::PrefixSync;
+    if (seenDvKeyword && seenPfsKeyword)
+        return TrafficCategory::PFS;
+    if (seenDvKeyword && seenPsdKeyword)
+        return TrafficCategory::PSD;
     if (seenDvKeyword)
         return TrafficCategory::DvAdvert;
 
@@ -242,7 +248,7 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
 // ─── Tracer lifecycle ──────────────────────────────────────────────
 
 static const char* kCategoryNames[] = {
-    "DvAdvert", "PrefixSync", "Mgmt", "UserInterest", "UserData", "Other",
+    "DvAdvert", "PFS", "PSD", "Mgmt", "UserInterest", "UserData", "Other",
 };
 
 NdndLinkTracer::NdndLinkTracer(const std::string& file, Time period)
@@ -257,6 +263,27 @@ NdndLinkTracer::NdndLinkTracer(const std::string& file, Time period)
     m_out << "\n";
 }
 
+NdndLinkTracer::NdndLinkTracer(const std::string& file,
+                               Time period,
+                               const std::string& node,
+                               const std::string& peer,
+                               bool append)
+    : m_out(file, append ? std::ios::app : std::ios::out),
+      m_period(period),
+      m_perPacket(false),
+      m_node(node),
+      m_peer(peer),
+      m_counters{}
+{
+    if (!append)
+    {
+        m_out << "Time,Node,Peer";
+        for (size_t i = 0; i < kNumCategories; ++i)
+            m_out << "," << kCategoryNames[i] << "_Pkts," << kCategoryNames[i] << "_Bytes";
+        m_out << "\n";
+    }
+}
+
 NdndLinkTracer::NdndLinkTracer(const std::string& file)
     : m_out(file),
       m_period(Seconds(0)),
@@ -264,6 +291,23 @@ NdndLinkTracer::NdndLinkTracer(const std::string& file)
       m_counters{}
 {
     m_out << "Time,Category,Bytes\n";
+}
+
+NdndLinkTracer::NdndLinkTracer(const std::string& file,
+                               const std::string& node,
+                               const std::string& peer,
+                               bool append)
+    : m_out(file, append ? std::ios::app : std::ios::out),
+      m_period(Seconds(0)),
+      m_perPacket(true),
+      m_node(node),
+      m_peer(peer),
+      m_counters{}
+{
+    if (!append)
+    {
+        m_out << "Time,Node,Peer,Category,Bytes\n";
+    }
 }
 
 NdndLinkTracer::~NdndLinkTracer()
@@ -280,9 +324,31 @@ NdndLinkTracer::Create(const std::string& file, Time period)
 }
 
 std::shared_ptr<NdndLinkTracer>
+NdndLinkTracer::Create(const std::string& file,
+                       Time period,
+                       const std::string& node,
+                       const std::string& peer,
+                       bool append)
+{
+    auto tracer =
+        std::shared_ptr<NdndLinkTracer>(new NdndLinkTracer(file, period, node, peer, append));
+    tracer->ScheduleNext();
+    return tracer;
+}
+
+std::shared_ptr<NdndLinkTracer>
 NdndLinkTracer::CreatePerPacket(const std::string& file)
 {
     return std::shared_ptr<NdndLinkTracer>(new NdndLinkTracer(file));
+}
+
+std::shared_ptr<NdndLinkTracer>
+NdndLinkTracer::CreatePerPacket(const std::string& file,
+                                const std::string& node,
+                                const std::string& peer,
+                                bool append)
+{
+    return std::shared_ptr<NdndLinkTracer>(new NdndLinkTracer(file, node, peer, append));
 }
 
 void
@@ -291,6 +357,28 @@ NdndLinkTracer::ConnectLink(NetDeviceContainer devices)
     for (uint32_t i = 0; i < devices.GetN(); ++i)
     {
         ConnectDevice(devices.Get(i));
+    }
+}
+
+void
+NdndLinkTracer::ConnectLink(NetDeviceContainer devices,
+                            const std::string& node,
+                            const std::string& peer)
+{
+    uint32_t index = static_cast<uint32_t>(m_linkCounters.size());
+    LinkCounters link;
+    link.node = node;
+    link.peer = peer;
+    m_linkCounters.push_back(link);
+
+    for (uint32_t i = 0; i < devices.GetN(); ++i)
+    {
+        if (auto dev = devices.Get(i))
+        {
+            dev->TraceConnect("MacTx",
+                              std::to_string(index),
+                              MakeCallback(&NdndLinkTracer::MacTxCallbackWithContext, this));
+        }
     }
 }
 
@@ -305,8 +393,8 @@ NdndLinkTracer::ConnectDevice(Ptr<NetDevice> dev)
     }
 }
 
-void
-NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
+TrafficCategory
+NdndLinkTracer::ClassifyPacket(Ptr<const Packet> packet, uint32_t* lpBytes) const
 {
     uint32_t sz = packet->GetSize();
     std::vector<uint8_t> buf(sz);
@@ -322,28 +410,97 @@ NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
         cat = Classify(buf.data() + offset, sz - offset);
     }
 
-    uint32_t lpBytes = tag.GetPayloadSize();
+    *lpBytes = tag.GetPayloadSize();
+    return cat;
+}
+
+void
+NdndLinkTracer::CountPacket(std::array<Counters, kNumCategories>& counters,
+                            TrafficCategory cat,
+                            uint32_t lpBytes)
+{
+    auto idx = static_cast<size_t>(cat);
+    counters[idx].packets++;
+    counters[idx].bytes += lpBytes;
+}
+
+void
+NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
+{
+    uint32_t lpBytes = 0;
+    TrafficCategory cat = ClassifyPacket(packet, &lpBytes);
+
+    if (m_perPacket)
+    {
+        m_out << Simulator::Now().GetNanoSeconds() / 1e9;
+        if (!m_node.empty() || !m_peer.empty())
+        {
+            m_out << "," << m_node << "," << m_peer;
+        }
+        m_out << "," << kCategoryNames[static_cast<size_t>(cat)]
+              << "," << lpBytes << "\n";
+        return;
+    }
+
+    // Count LP-encoded packet bytes (from the tag), excluding L2 headers.
+    // This matches emulation's UDP-payload accounting (UDP payload = LP pkt).
+    CountPacket(m_counters, cat, lpBytes);
+}
+
+void
+NdndLinkTracer::MacTxCallbackWithContext(std::string context, Ptr<const Packet> packet)
+{
+    uint32_t linkIndex = 0;
+    std::istringstream is(context);
+    is >> linkIndex;
+    if (linkIndex >= m_linkCounters.size())
+    {
+        MacTxCallback(packet);
+        return;
+    }
+
+    uint32_t lpBytes = 0;
+    TrafficCategory cat = ClassifyPacket(packet, &lpBytes);
+    auto& link = m_linkCounters[linkIndex];
 
     if (m_perPacket)
     {
         m_out << Simulator::Now().GetNanoSeconds() / 1e9
+              << "," << link.node << "," << link.peer
               << "," << kCategoryNames[static_cast<size_t>(cat)]
               << "," << lpBytes << "\n";
         return;
     }
 
-    auto idx = static_cast<size_t>(cat);
-    m_counters[idx].packets++;
-    // Count LP-encoded packet bytes (from the tag), excluding L2 headers.
-    // This matches emulation's UDP-payload accounting (UDP payload = LP pkt).
-    m_counters[idx].bytes += lpBytes;
+    CountPacket(link.counters, cat, lpBytes);
 }
 
 void
 NdndLinkTracer::WriteStats()
 {
     double t = Simulator::Now().GetSeconds();
+    if (!m_linkCounters.empty())
+    {
+        for (auto& link : m_linkCounters)
+        {
+            m_out << t << "," << link.node << "," << link.peer;
+            for (size_t i = 0; i < kNumCategories; ++i)
+            {
+                m_out << "," << link.counters[i].packets << "," << link.counters[i].bytes;
+                link.counters[i].packets = 0;
+                link.counters[i].bytes = 0;
+            }
+            m_out << "\n";
+        }
+        ScheduleNext();
+        return;
+    }
+
     m_out << t;
+    if (!m_node.empty() || !m_peer.empty())
+    {
+        m_out << "," << m_node << "," << m_peer;
+    }
     for (size_t i = 0; i < kNumCategories; ++i)
     {
         m_out << "," << m_counters[i].packets << "," << m_counters[i].bytes;
