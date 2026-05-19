@@ -299,6 +299,16 @@ func simMulticastFib() table.FibStrategy {
 	return h.MulticastFib.(table.FibStrategy)
 }
 
+// simRouterName returns the per-node router name in simulation. Production
+// CfgRouterName reads global config, which is unset in ndndSIM nodes.
+func simRouterName() (enc.Name, bool) {
+	h := _ndndsim.GetHooks()
+	if h.RouterName != nil {
+		return h.RouterName.(enc.Name), true
+	}
+	return CfgRouterName()
+}
+
 // per-node FIB/PET side-tables keyed by *Thread to avoid modifying Thread struct.
 var (
 	simFibMu  sync.RWMutex
@@ -479,8 +489,10 @@ func (dv *Router) Init() error {
 	dv.rib.Set(dv.config.RouterName(), dv.config.RouterName(), 0)
 	dv.advert.generate()
 
-	// Initialise prefix egress state (table only; SVS not yet started).
-	dv.pfx.Reset()
+	// Initialise prefix egress state. Twophase suppresses the startup reset
+	// publication so a no-prefix p0 run has zero PSD traffic.
+	dv.resetPfxForSim()
+	dv.startPfxFromScratchReady()
 
 	// nfdc.Start() is NOT launched in simulation: all management commands
 	// are executed synchronously via simExec (ruleNfdcChannelSend transform).
@@ -1540,9 +1552,28 @@ func applySvsAloDataChannels(file *ast.File) bool {
 // sim methods into fw/fw/thread.go and adds the "sync" import.
 func applyThreadSimExtensions(file *ast.File, fset *token.FileSet) bool {
 	injectDecls(file, fset, threadSimSnippet)
+	applyThreadRouterNameHook(file)
 	// thread.go has sync/atomic but not sync itself.
 	astutil.AddImport(fset, file, "sync")
 	return true
+}
+
+func applyThreadRouterNameHook(file *ast.File) bool {
+	modified := false
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		call, ok := c.Node().(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "CfgRouterName" || len(call.Args) != 0 {
+			return true
+		}
+		c.Replace(&ast.CallExpr{Fun: ast.NewIdent("simRouterName")})
+		modified = true
+		return true
+	}, nil)
+	return modified
 }
 
 func applyBierSimExtensions(file *ast.File, fset *token.FileSet) bool {

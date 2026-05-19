@@ -26,156 +26,11 @@
 #include "ns3/ndndsim-topology-reader.h"
 #include "ns3/ndndsim-go-bridge.h"
 
-#include <algorithm>
 #include <functional>
 #include <fstream>
-#include <limits>
-#include <map>
-#include <queue>
-#include <sstream>
-#include <tuple>
-#include <vector>
 
 using namespace ns3;
 using namespace ns3::ndndsim;
-
-namespace
-{
-
-struct Edge
-{
-    uint32_t to;
-    uint16_t metric;
-    uint64_t faceId;
-};
-
-std::string
-RouterName(uint32_t nodeId)
-{
-    return "/minindn/node" + std::to_string(nodeId);
-}
-
-std::string
-JsonEscape(const std::string& value)
-{
-    std::ostringstream os;
-    for (char ch : value)
-    {
-        if (ch == '\\' || ch == '"')
-        {
-            os << '\\';
-        }
-        os << ch;
-    }
-    return os.str();
-}
-
-std::string
-BuildRoutesJson(const std::vector<std::tuple<std::string, std::string, uint64_t, uint64_t>>& routes)
-{
-    std::ostringstream os;
-    os << "[";
-    for (size_t i = 0; i < routes.size(); ++i)
-    {
-        const auto& [dest, nextHop, cost, faceId] = routes[i];
-        if (i > 0)
-        {
-            os << ",";
-        }
-        os << "{\"dest\":\"" << JsonEscape(dest)
-           << "\",\"nextHop\":\"" << JsonEscape(nextHop)
-           << "\",\"cost\":" << cost
-           << ",\"faceId\":" << faceId << "}";
-    }
-    os << "]";
-    return os.str();
-}
-
-void
-SeedSyntheticRouting(const NodeContainer& nodes, const std::vector<NdndTopologyReader::LinkInfo>& links)
-{
-    std::map<uint32_t, std::vector<Edge>> graph;
-
-    for (const auto& link : links)
-    {
-        uint32_t a = link.fromNode->GetId();
-        uint32_t b = link.toNode->GetId();
-        auto aStack = link.fromNode->GetObject<NdndStack>();
-        auto bStack = link.toNode->GetObject<NdndStack>();
-        uint64_t aFace = aStack->GetFaceId(link.devices.Get(0)->GetIfIndex());
-        uint64_t bFace = bStack->GetFaceId(link.devices.Get(1)->GetIfIndex());
-        graph[a].push_back({b, link.metric, aFace});
-        graph[b].push_back({a, link.metric, bFace});
-    }
-
-    for (uint32_t srcIdx = 0; srcIdx < nodes.GetN(); ++srcIdx)
-    {
-        uint32_t src = nodes.Get(srcIdx)->GetId();
-        std::map<uint32_t, uint64_t> dist;
-        std::map<uint32_t, uint32_t> firstHop;
-        using State = std::pair<uint64_t, uint32_t>;
-        std::priority_queue<State, std::vector<State>, std::greater<State>> pq;
-
-        dist[src] = 0;
-        firstHop[src] = src;
-        pq.push({0, src});
-
-        while (!pq.empty())
-        {
-            auto [cost, u] = pq.top();
-            pq.pop();
-            if (cost != dist[u])
-            {
-                continue;
-            }
-            for (const auto& edge : graph[u])
-            {
-                uint64_t nextCost = cost + edge.metric;
-                if (!dist.count(edge.to) || nextCost < dist[edge.to])
-                {
-                    dist[edge.to] = nextCost;
-                    firstHop[edge.to] = (u == src) ? edge.to : firstHop[u];
-                    pq.push({nextCost, edge.to});
-                }
-            }
-        }
-
-        std::vector<std::tuple<std::string, std::string, uint64_t, uint64_t>> routes;
-        for (uint32_t dstIdx = 0; dstIdx < nodes.GetN(); ++dstIdx)
-        {
-            uint32_t dst = nodes.Get(dstIdx)->GetId();
-            if (dst == src || !dist.count(dst))
-            {
-                continue;
-            }
-            uint32_t hop = firstHop[dst];
-            uint64_t faceId = 0;
-            for (const auto& edge : graph[src])
-            {
-                if (edge.to == hop)
-                {
-                    faceId = edge.faceId;
-                    break;
-                }
-            }
-            NS_ABORT_MSG_IF(faceId == 0, "No face for synthetic next hop");
-            routes.push_back({RouterName(dst), RouterName(hop), dist[dst], faceId});
-        }
-
-        std::string json = BuildRoutesJson(routes);
-        int rc = NdndSimSeedSyntheticDvRoutes(src,
-                                               const_cast<char*>(json.c_str()),
-                                               static_cast<int>(json.size()));
-        NS_ABORT_MSG_IF(rc != 0, "Failed to seed synthetic DV routes");
-    }
-
-    for (uint32_t i = 0; i < nodes.GetN(); ++i)
-    {
-        NdndSimSeedBiftFromRib(nodes.Get(i)->GetId());
-    }
-}
-
-} // namespace
 
 int
 main(int argc, char* argv[])
@@ -190,7 +45,6 @@ main(int argc, char* argv[])
     double traceInterval = 0.05; // 50 ms
     int numPrefixes = 0;         // prefixes per node to announce (0 = none)
     int totalPrefixes = -1;      // total prefixes to introduce from node0
-    bool syntheticRouting = false;
     double prefixIntroduceTime = 1.0;
 
     CommandLine cmd;
@@ -205,11 +59,9 @@ main(int argc, char* argv[])
     cmd.AddValue("numPrefixes",
                  "Number of prefixes each node announces (0 = none)", numPrefixes);
     cmd.AddValue("totalPrefixes",
-                 "Total prefixes to introduce from node0 after synthetic routing", totalPrefixes);
-    cmd.AddValue("syntheticRouting",
-                 "Seed DV routing tables before introducing prefixes", syntheticRouting);
+                 "Total prefixes to introduce from node0 at prefixIntroduceTime", totalPrefixes);
     cmd.AddValue("prefixIntroduceTime",
-                 "Time in seconds to introduce totalPrefixes under synthetic routing", prefixIntroduceTime);
+                 "Time in seconds to introduce totalPrefixes from node0", prefixIntroduceTime);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(topoFile.empty(), "--topo is required");
@@ -229,12 +81,7 @@ main(int argc, char* argv[])
     stackHelper.Install(nodes);
     NdndStackHelper::EnableDvRouting(network, nodes, dvConfig);
 
-    if (syntheticRouting)
-    {
-        SeedSyntheticRouting(nodes, reader.GetLinks());
-    }
-
-    if (syntheticRouting && totalPrefixes > 0)
+    if (totalPrefixes > 0)
     {
         Simulator::Schedule(Seconds(prefixIntroduceTime), [nodes, totalPrefixes]() {
             auto stack = nodes.Get(0)->GetObject<NdndStack>();
@@ -246,9 +93,9 @@ main(int argc, char* argv[])
         });
     }
 
-    // Legacy mode: announce synthetic prefixes on each node after DV convergence.
+    // Legacy mode: announce generated prefixes on each node after DV convergence.
     // Uses in-flight DV advertisement silence detection via polling.
-    if (!syntheticRouting && numPrefixes > 0)
+    if (numPrefixes > 0)
     {
         NdndSimSetTotalNodes(static_cast<int>(nodes.GetN()));
         const int64_t silenceNs = static_cast<int64_t>(2.0 * 1e9); // 2s silence

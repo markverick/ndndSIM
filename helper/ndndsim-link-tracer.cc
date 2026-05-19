@@ -122,6 +122,12 @@ ComponentEquals(const uint8_t* val, uint64_t valLen, const char* str)
 TrafficCategory
 NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
 {
+    return ClassifyDetailed(buf, len).category;
+}
+
+TrafficPacketInfo
+NdndLinkTracer::ClassifyDetailed(const uint8_t* buf, uint32_t len)
+{
     const uint8_t* p = buf;
     const uint8_t* end = buf + len;
 
@@ -134,7 +140,7 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
         uint64_t lpLen = ReadVarNum(p, end);
         const uint8_t* lpEnd = p + lpLen;
         if (lpEnd > end)
-            return TrafficCategory::Other;
+            return {};
 
         // Walk LP header fields until we find Fragment (0x50)
         while (p < lpEnd)
@@ -142,7 +148,7 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
             uint64_t fieldType = ReadVarNum(p, lpEnd);
             uint64_t fieldLen = ReadVarNum(p, lpEnd);
             if (p + fieldLen > lpEnd)
-                return TrafficCategory::Other;
+                return {};
 
             if (fieldType == kTlvLpFragment)
             {
@@ -159,26 +165,29 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
 
         // If we didn't find a Fragment, classify as Other
         if (outerType == kTlvLpPacket)
-            return TrafficCategory::Other;
+            return {};
     }
 
     bool isInterest = (outerType == kTlvInterest);
     bool isData = (outerType == kTlvData);
     if (!isInterest && !isData)
-        return TrafficCategory::Other;
+        return {};
+
+    TrafficPacketInfo info;
+    info.packetType = isInterest ? TrafficPacketType::Interest : TrafficPacketType::Data;
 
     // Skip outer TLV-LENGTH
     ReadVarNum(p, end);
 
     // 2. First inner element must be Name (type 0x07)
     if (p >= end)
-        return TrafficCategory::Other;
+        return info;
     uint64_t nameType = ReadVarNum(p, end);
     if (nameType != kTlvName)
-        return TrafficCategory::Other;
+        return info;
     uint64_t nameLen = ReadVarNum(p, end);
     if (p + nameLen > end)
-        return TrafficCategory::Other;
+        return info;
 
     const uint8_t* nameEnd = p + nameLen;
 
@@ -234,21 +243,26 @@ NdndLinkTracer::Classify(const uint8_t* buf, uint32_t len)
 
     // Classify
     if (firstIsLocalhost && secondIsNlsr)
-        return TrafficCategory::Mgmt;
-    if (seenDvKeyword && seenPfsKeyword)
-        return TrafficCategory::PFS;
-    if (seenDvKeyword && seenPsdKeyword)
-        return TrafficCategory::PSD;
-    if (seenDvKeyword)
-        return TrafficCategory::DvAdvert;
-
-    return isInterest ? TrafficCategory::UserInterest : TrafficCategory::UserData;
+        info.category = TrafficCategory::Mgmt;
+    else if (seenDvKeyword && seenPfsKeyword)
+        info.category = TrafficCategory::PFS;
+    else if (seenDvKeyword && seenPsdKeyword)
+        info.category = TrafficCategory::PSD;
+    else if (seenDvKeyword)
+        info.category = TrafficCategory::DvAdvert;
+    else
+        info.category = isInterest ? TrafficCategory::UserInterest : TrafficCategory::UserData;
+    return info;
 }
 
 // ─── Tracer lifecycle ──────────────────────────────────────────────
 
 static const char* kCategoryNames[] = {
     "DvAdvert", "PFS", "PSD", "Mgmt", "UserInterest", "UserData", "Other",
+};
+
+static const char* kPacketTypeNames[] = {
+    "Interest", "Data", "Unknown",
 };
 
 NdndLinkTracer::NdndLinkTracer(const std::string& file, Time period)
@@ -290,7 +304,7 @@ NdndLinkTracer::NdndLinkTracer(const std::string& file)
       m_perPacket(true),
       m_counters{}
 {
-    m_out << "Time,Category,Bytes\n";
+    m_out << "Time,Category,PacketType,Bytes\n";
 }
 
 NdndLinkTracer::NdndLinkTracer(const std::string& file,
@@ -306,7 +320,7 @@ NdndLinkTracer::NdndLinkTracer(const std::string& file,
 {
     if (!append)
     {
-        m_out << "Time,Node,Peer,Category,Bytes\n";
+        m_out << "Time,Node,Peer,Category,PacketType,Bytes\n";
     }
 }
 
@@ -394,7 +408,9 @@ NdndLinkTracer::ConnectDevice(Ptr<NetDevice> dev)
 }
 
 TrafficCategory
-NdndLinkTracer::ClassifyPacket(Ptr<const Packet> packet, uint32_t* lpBytes) const
+NdndLinkTracer::ClassifyPacket(Ptr<const Packet> packet,
+                               uint32_t* lpBytes,
+                               TrafficPacketType* packetType) const
 {
     uint32_t sz = packet->GetSize();
     std::vector<uint8_t> buf(sz);
@@ -403,14 +419,21 @@ NdndLinkTracer::ClassifyPacket(Ptr<const Packet> packet, uint32_t* lpBytes) cons
     // Read the tag set by OnSendPacket to find where NDN TLV starts.
     NdnPayloadTag tag;
     TrafficCategory cat = TrafficCategory::Other;
+    TrafficPacketType typ = TrafficPacketType::Unknown;
     if (packet->PeekPacketTag(tag))
     {
         uint32_t ndnSize = tag.GetPayloadSize();
         uint32_t offset = (sz >= ndnSize) ? sz - ndnSize : 0;
-        cat = Classify(buf.data() + offset, sz - offset);
+        TrafficPacketInfo info = ClassifyDetailed(buf.data() + offset, sz - offset);
+        cat = info.category;
+        typ = info.packetType;
     }
 
     *lpBytes = tag.GetPayloadSize();
+    if (packetType != nullptr)
+    {
+        *packetType = typ;
+    }
     return cat;
 }
 
@@ -428,7 +451,8 @@ void
 NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
 {
     uint32_t lpBytes = 0;
-    TrafficCategory cat = ClassifyPacket(packet, &lpBytes);
+    TrafficPacketType typ = TrafficPacketType::Unknown;
+    TrafficCategory cat = ClassifyPacket(packet, &lpBytes, &typ);
 
     if (m_perPacket)
     {
@@ -438,6 +462,7 @@ NdndLinkTracer::MacTxCallback(Ptr<const Packet> packet)
             m_out << "," << m_node << "," << m_peer;
         }
         m_out << "," << kCategoryNames[static_cast<size_t>(cat)]
+              << "," << kPacketTypeNames[static_cast<size_t>(typ)]
               << "," << lpBytes << "\n";
         return;
     }
@@ -460,7 +485,8 @@ NdndLinkTracer::MacTxCallbackWithContext(std::string context, Ptr<const Packet> 
     }
 
     uint32_t lpBytes = 0;
-    TrafficCategory cat = ClassifyPacket(packet, &lpBytes);
+    TrafficPacketType typ = TrafficPacketType::Unknown;
+    TrafficCategory cat = ClassifyPacket(packet, &lpBytes, &typ);
     auto& link = m_linkCounters[linkIndex];
 
     if (m_perPacket)
@@ -468,6 +494,7 @@ NdndLinkTracer::MacTxCallbackWithContext(std::string context, Ptr<const Packet> 
         m_out << Simulator::Now().GetNanoSeconds() / 1e9
               << "," << link.node << "," << link.peer
               << "," << kCategoryNames[static_cast<size_t>(cat)]
+              << "," << kPacketTypeNames[static_cast<size_t>(typ)]
               << "," << lpBytes << "\n";
         return;
     }

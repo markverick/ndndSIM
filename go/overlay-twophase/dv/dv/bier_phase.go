@@ -15,6 +15,24 @@ func (dv *Router) simSeedPsdPrefix() {
 	dv.updatePsdPrefix()
 }
 
+func (dv *Router) resetPfxForSim() {}
+
+func (dv *Router) startPfxFromScratchReady() {
+	if _, ok := _pfxStarted.Load(dv); ok {
+		return
+	}
+	if _, loaded := _pfxStarted.LoadOrStore(dv, struct{}{}); loaded {
+		return
+	}
+	if prev, ok := _pfxCancel.Load(dv); ok {
+		prev.(func())()
+	}
+
+	// In from-scratch experiments, keep PSD quiet at T=0 but ready to publish
+	// the first real prefix event. This avoids PSD bootstrap traffic in p0.
+	_ = dv.pfx.pfxSvs.SimStartQuiet()
+}
+
 func (dv *Router) startPfxSyntheticReady(_ int) {
 	if _, ok := _pfxStarted.Load(dv); ok {
 		return

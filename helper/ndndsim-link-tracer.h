@@ -67,6 +67,19 @@ enum class TrafficCategory : uint8_t
     COUNT          ///< sentinel — number of categories
 };
 
+enum class TrafficPacketType : uint8_t
+{
+    Interest = 0,
+    Data,
+    Unknown,
+};
+
+struct TrafficPacketInfo
+{
+    TrafficCategory category = TrafficCategory::Other;
+    TrafficPacketType packetType = TrafficPacketType::Unknown;
+};
+
 static constexpr size_t kNumCategories = static_cast<size_t>(TrafficCategory::COUNT);
 
 /**
@@ -127,6 +140,7 @@ class NdndLinkTracer
 
     /// Classify a raw NDN TLV buffer.
     static TrafficCategory Classify(const uint8_t* buf, uint32_t len);
+    static TrafficPacketInfo ClassifyDetailed(const uint8_t* buf, uint32_t len);
 
     std::ofstream m_out;
     Time m_period;
@@ -148,7 +162,9 @@ class NdndLinkTracer
         std::array<Counters, kNumCategories> counters;
     };
 
-    TrafficCategory ClassifyPacket(Ptr<const Packet> packet, uint32_t* lpBytes) const;
+    TrafficCategory ClassifyPacket(Ptr<const Packet> packet,
+                                   uint32_t* lpBytes,
+                                   TrafficPacketType* packetType = nullptr) const;
     void CountPacket(std::array<Counters, kNumCategories>& counters,
                      TrafficCategory cat,
                      uint32_t lpBytes);
